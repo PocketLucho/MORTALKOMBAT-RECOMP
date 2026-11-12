@@ -1,0 +1,48 @@
+Mortal Kombat Recomp - la saga recreativa Mortal Kombat de Midway
+=================================================================
+Creado por Pocket_lucho con Claude (Anthropic).
+Proyecto: https://github.com/PocketLucho/MORTALKOMBAT-RECOMP
+Si quieres apoyarme ve a https://buymeacoffee.com/pocket_lucho
+
+Ejecuta MKRecomp.exe (Windows 10/11 de 64 bits, sin instalacion). Al arrancar
+aparece un menu para elegir el juego (flechas + Enter, o el mando). Esc vuelve
+al menu. El idioma (castellano / English) se cambia en el menu.
+
+(English: see README.txt)
+
+
+IMPORTANTE: LOS DATOS DEL JUEGO LOS PONES TU
+--------------------------------------------
+El programa NO incluye graficos, sonido, musica ni codigo de Midway: estan
+protegidos por derechos de autor y no se pueden distribuir. Copia en la carpeta
+roms\ tus propios romsets de MAME. El programa los busca solo (por CRC32, da
+igual el nombre del fichero o si estan dentro de un .zip); no hace falta
+descomprimir nada.
+
+  Juego                          Que copiar en roms\
+  -----------------------------  ------------------------------------------
+  Mortal Kombat (1992)           mk.zip      (rev 5.0 o 4.0 T-Unit)
+  Mortal Kombat II (1993)        mk2.zip     (rev L3.1)
+  Mortal Kombat 3 (1995)         mk3r10.zip  (rev 1.0) o mk3.zip (rev 2.1)
+  Ultimate Mortal Kombat 3       umk3.zip    (rev 1.2, 1.1 o 1.0)
+
+Si a un juego le falta algo sale en gris; al seleccionarlo, un mensaje dice
+que copiar.
+
+
+CONTROLES
+---------
+Fila de arriba: punetazo alto / bloqueo / patada alta
+Fila de abajo:  punetazo bajo / bloqueo 2 (MK, MK II) o correr (MK3) / patada baja
+
+  J1: flechas, A S D (arriba), Z X C (abajo), start 1, moneda 5
+  J2: I J K L, R T Y (arriba), F G H (abajo), start 2, moneda 6
+  Mando: Y punetazo alto, X punetazo bajo, B patada alta, A patada baja,
+         RB/RT bloqueo, LB/LT bloqueo 2 / correr, Start, Back = moneda
+
+  Esc menu  P pausa  F1 ayuda  F2 TEST  F3 reset  F4 video  F7 aspecto
+  F11 pantalla completa  F12 captura  -/+ volumen  9 credito de servicio
+
+Las teclas y las opciones de la recreativa (juego libre, pais, sangre,
+violencia, golpes bajos, sonido en demo) se cambian en mk_recomp.ini.
+Las puntuaciones y ajustes de cada juego se guardan en saves\.

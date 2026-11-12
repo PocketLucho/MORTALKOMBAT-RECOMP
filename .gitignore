@@ -1,0 +1,17 @@
+build/
+__pycache__/
+*.pyc
+# never commit game data: ROMs, romsets, extracted files
+*.zip
+*.7z
+*.rom
+*.bin
+*.ppm
+dist/MKRecomp/*.exe
+dist/MKRecomp/MKRecomp
+dist/MKRecomp/*.dll
+dist/MKRecomp/roms/*
+!dist/MKRecomp/roms/LEEME_README.txt
+dist/MKRecomp/saves/
+dist/MKRecomp/screenshots/
+dist/MKRecomp/mk_recomp.ini
