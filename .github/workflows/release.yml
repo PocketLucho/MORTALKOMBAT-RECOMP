@@ -1,29 +1,35 @@
 name: build
 
+permissions:
+  contents: write
+
 on:
   push:
     branches: [ main ]
-    tags: [ 'v*' ]
+    tags: [ 'v*', '[0-9]*' ]
   pull_request:
   workflow_dispatch:
 
 jobs:
+  # Windows build cross-compiled on Linux (MinGW-w64): no need to wait for a Windows runner
   windows:
-    runs-on: windows-latest
-    defaults:
-      run:
-        shell: msys2 {0}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      SDL_VER: 2.30.9
     steps:
       - uses: actions/checkout@v4
-      - uses: msys2/setup-msys2@v2
-        with:
-          msystem: MINGW64
-          update: true
-          install: make mingw-w64-x86_64-gcc mingw-w64-x86_64-SDL2 zip
+      - name: Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y g++-mingw-w64-x86-64-posix gcc-mingw-w64-x86-64-posix zip
+          curl -sSL -o sdl.tar.gz https://github.com/libsdl-org/SDL/releases/download/release-$SDL_VER/SDL2-devel-$SDL_VER-mingw.tar.gz
+          tar xzf sdl.tar.gz
       - name: Build
         run: |
-          make -j4 BUILD=build/win CXX=g++ build/win/libcore.a
-          make win WINCC=gcc WINCXX=g++ SDL2W=/mingw64
+          make -j4 BUILD=build/win CXX=x86_64-w64-mingw32-g++-posix CC=x86_64-w64-mingw32-gcc-posix AR=x86_64-w64-mingw32-ar build/win/libcore.a
+          make win WINCC=x86_64-w64-mingw32-gcc-posix WINCXX=x86_64-w64-mingw32-g++-posix SDL2W=$PWD/SDL2-$SDL_VER/x86_64-w64-mingw32
+          file dist/MKRecomp/MKRecomp.exe
       - name: Package
         run: |
           mkdir -p out/MKRecomp/roms
@@ -41,6 +47,7 @@ jobs:
 
   linux:
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - name: Dependencies

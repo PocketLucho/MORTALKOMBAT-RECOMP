@@ -1,5 +1,6 @@
 CXX ?= g++
 CXXFLAGS ?= -std=c++20 -O2 -g -Wno-deprecated-declarations
+AR ?= ar
 INC = -Isrc/emu -Isrc/mame -Isrc/board
 CORE_SRC = src/emu/emu.cpp \
   src/mame/cpu/tms34010/tms34010.cpp src/mame/cpu/tms34010/34010dsm.cpp \
@@ -15,7 +16,7 @@ $(BUILD)/%.o: %.cpp
 	$(CXX) $(CXXFLAGS) $(INC) -MMD -MP -c $< -o $@
 
 $(BUILD)/libcore.a: $(CORE_OBJ)
-	ar rcs $@ $^
+	$(AR) rcs $@ $^
 
 all: $(BUILD)/cattest
 
