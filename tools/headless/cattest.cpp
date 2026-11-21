@@ -1,6 +1,10 @@
 // cattest.cpp - run a catalogue game headless with a scripted input pattern
 #include "games.h"
+#include "recomp/rc_abi.h"
+#include "cpu/tms34010/tms34010.h"
 #include <cstdio>
+#include <chrono>
+#include <dlfcn.h>
 int main(int argc, char **argv)
 {
 	std::string base = argv[1], id = argv[2];
@@ -15,6 +19,18 @@ int main(int argc, char **argv)
 		auto m = cat.create(g, err);
 		if (!m) { printf("create failed: %s\n", err.c_str()); return 1; }
 		dip_settings d; m->set_dips(d); m->reset();
+		// RCMOD=<module.so>: run with the statically recompiled program
+		if (const char *mod = getenv("RCMOD"))
+		{
+			void *h = dlopen(mod, RTLD_NOW | RTLD_LOCAL);
+			if (!h) { printf("dlopen: %s\n", dlerror()); return 1; }
+			auto get = reinterpret_cast<rc_get_module_fn>(dlsym(h, RC_ENTRY_NAME));
+			std::string r = get ? m->attach_recomp(get()) : "no entry point";
+			printf("recompiled module: %s\n", r.empty() ? "attached" : r.c_str());
+			if (!r.empty()) return 1;
+		}
+		auto t0 = std::chrono::steady_clock::now();
+		FILE *hashes = getenv("HASHES") ? fopen(getenv("HASHES"), "w") : nullptr;
 		static offs_t tr[4096];
 		if (getenv("TRACE") && m->maincpu()) { m->maincpu()->m_trace = tr; m->maincpu()->m_trace_lo = 0xff800000; }
 		bool dumped = false;
@@ -42,6 +58,11 @@ int main(int argc, char **argv)
 				for (int i = 4000; i > 0; i--) { offs_t p = tr[(c->m_trace_pos - i) & 4095]; if (i < 4000 && p != tr[(c->m_trace_pos - i - 1) & 4095]) printf(" %08x", p); }
 				printf("\n");
 			}
+			if (hashes)
+			{
+				u64 h = rc_fnv64(reinterpret_cast<const uint8_t *>(m->frame()), size_t(m->width()) * m->height() * 4);
+				fprintf(hashes, "%d %016llx %08x %08x\n", f, (unsigned long long)h, m->state_hash(), m->pc());
+			}
 			m->take_audio(a);
 			{ static FILE *wf = getenv("WAVOUT") ? fopen(getenv("WAVOUT"), "wb") : nullptr; if (wf) { for (float v : a) { short x = short(std::max(-1.f, std::min(1.f, v)) * 32767); fwrite(&x, 2, 1, wf); } fflush(wf); } }
 			for (float v : a) peak = std::max(peak, double(std::fabs(v)));
@@ -53,6 +74,19 @@ int main(int argc, char **argv)
 				FILE *o = fopen(fn, "wb");
 				fprintf(o, "P6\n%d %d\n255\n", m->width(), m->height());
 				for (int i = 0; i < m->width() * m->height(); i++) { u32 c = m->frame()[i]; u8 px[3] = { u8(c >> 16), u8(c >> 8), u8(c) }; fwrite(px, 1, 3, o); }
+				fclose(o);
+			}
+		}
+		double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+		printf("time %.2f s (%.1f fps)\n", secs, frames / secs);
+		if (hashes) fclose(hashes);
+		if (auto *c = dynamic_cast<tms34010_device *>(m->maincpu()); c && c->recompiled())
+		{
+			printf("interpreted instructions: %llu, distinct ROM addresses not recompiled: %zu\n", (unsigned long long)c->rc_interpreted, c->rc_misses.size());
+			if (const char *mo = getenv("MISSOUT"))
+			{
+				FILE *o = fopen(mo, "a");
+				for (u32 pc : c->rc_misses) fprintf(o, "%08x\n", pc);
 				fclose(o);
 			}
 		}

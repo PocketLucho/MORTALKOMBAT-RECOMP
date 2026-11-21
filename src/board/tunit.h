@@ -61,6 +61,9 @@ public:
 		return fnv1a(m_roms.dcs.data(), m_roms.dcs.size() * 2, h);
 	}
 	cpu_device *maincpu() override { return &m_maincpu; }
+	std::string attach_recomp(const rc_module *m) override;
+	bool recompiled() const override { return m_maincpu.recompiled() != nullptr; }
+	u64 interpreted_instructions() const override { return m_maincpu.rc_interpreted; }
 
 private:
 	// mem_bus for the TMS34010 (bit addresses)

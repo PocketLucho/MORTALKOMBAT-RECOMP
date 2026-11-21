@@ -15,3 +15,12 @@ dist/MKRecomp/roms/*
 dist/MKRecomp/saves/
 dist/MKRecomp/screenshots/
 dist/MKRecomp/mk_recomp.ini
+# statically recompiled code: generated from the user's ROMs, never committed
+/recomp/
+/gen/
+/dist/MKRecomp/recomp/*
+!/dist/MKRecomp/recomp/LEEME_README.txt
+*.so
+*.dll
+*.miss
+/rc_*

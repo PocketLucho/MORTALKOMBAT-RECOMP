@@ -33,6 +33,8 @@ public:
 	bool uses_data_dir(const game_info &g) const;        // data/<id>/ holds an own build
 	void rescan() { m_pool = rom_pool(); m_pool_scanned = false; }
 	std::string base() const { return m_base; }
+	// the main CPU program image (0x100000 bytes, little-endian words) as the board sees it
+	bool program_image(const game_info &g, std::vector<u8> &out, std::string &err);
 private:
 	std::string m_base;
 	rom_pool m_pool;

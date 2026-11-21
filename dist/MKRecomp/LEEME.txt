@@ -33,6 +33,19 @@ Si a un juego le falta algo sale en gris; al seleccionarlo, un mensaje dice
 que copiar.
 
 
+RECOMPILACION ESTATICA (opcional)
+---------------------------------
+  Con tools/build_recomp.sh del repositorio (misma version que este paquete)
+  el programa TMS34010 de cada juego se recompila a C++ desde TUS ROMs y se
+  compila en recomp/<juego>.dll (Windows, desde WSL) o recomp/<juego>.so
+  (Linux). El menu marca con REC los juegos que lo tienen. El resultado es
+  identico al interprete; lo que falte se anota en recomp/<juego>.miss y se
+  incluye al volver a generarlo. No compartas esos ficheros. Instrucciones:
+  https://github.com/PocketLucho/MORTALKOMBAT-RECOMP
+  Steam: la opcion de lanzamiento  --game mk  (o mk2, mk3, umk3) abre ese
+  juego directamente.
+
+
 LINUX Y STEAMOS (Steam Deck, Legion Go S...)
 --------------------------------------------
   No hay que instalar nada: el programa lleva dentro lo que necesita y usa el

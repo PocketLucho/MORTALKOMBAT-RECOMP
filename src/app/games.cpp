@@ -234,3 +234,16 @@ std::unique_ptr<arcade_machine> game_catalog::create(const game_info &g, std::st
 	if (!load_dcs(p, u ? umk3_dcs : mk3_dcs, 4, 0x100000, r.dcs, err)) return nullptr;
 	return std::make_unique<wunit_machine>(std::move(r), u ? wunit_game::umk3 : wunit_game::mk3, 528);
 }
+
+bool game_catalog::program_image(const game_info &g, std::vector<u8> &out, std::string &err)
+{
+	std::string id = g.id;
+	rom_pool &p = pool();
+	if (!from_roms(g, err)) return false;
+	const prog_version *v = id == "mk" ? find_version(p, mk_versions) : id == "mk2" ? find_version(p, mk2_versions)
+	                      : id == "mk3" ? find_version(p, mk3_versions) : find_version(p, umk3_versions);
+	std::vector<u8> lo, hi;
+	if (!v || !load_desc(p, v->lo, lo, err) || !load_desc(p, v->hi, hi, err)) return false;
+	interleave(lo, hi, out);
+	return true;
+}

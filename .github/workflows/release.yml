@@ -29,11 +29,21 @@ jobs:
           make -j4 BUILD=build/win CXX=x86_64-w64-mingw32-g++-posix CC=x86_64-w64-mingw32-gcc-posix AR=x86_64-w64-mingw32-ar build/win/libcore.a
           make win WINCC=x86_64-w64-mingw32-gcc-posix WINCXX=x86_64-w64-mingw32-g++-posix SDL2W=$PWD/SDL2-$SDL_VER/x86_64-w64-mingw32
           file dist/MKRecomp/MKRecomp.exe
+      - name: Recompiler check (Windows module from a synthetic program, no ROMs)
+        run: |
+          sudo apt-get install -y build-essential
+          make -j4 build/linux/libcore.a build/linux/miniz.o build/linux/mkrecomp
+          make -j4 BUILD=build/win-rc CXX=x86_64-w64-mingw32-g++-posix AR=x86_64-w64-mingw32-ar CXXFLAGS="-std=c++20 -O1 -Wno-deprecated-declarations" build/win-rc/libcore.a
+          python3 tools/recomp/synth_image.py synth.bin
+          mkdir -p gen && build/linux/mkrecomp --image synth.bin gen
+          tools/recomp/build_module.sh gen test build/win-rc/libcore.a test.dll x86_64-w64-mingw32-g++-posix
+          file test.dll
       - name: Package
         run: |
           mkdir -p out/MKRecomp/roms
           cp dist/MKRecomp/MKRecomp.exe dist/MKRecomp/*.txt out/MKRecomp/
           cp dist/MKRecomp/roms/LEEME_README.txt out/MKRecomp/roms/
+          mkdir -p out/MKRecomp/recomp && cp dist/MKRecomp/recomp/LEEME_README.txt out/MKRecomp/recomp/
           cd out && zip -r ../MKRecomp-windows-x64.zip MKRecomp
       - uses: actions/upload-artifact@v4
         with:
@@ -70,12 +80,21 @@ jobs:
           make -j4 CXX=g++-12 CC=gcc-12 build/linux/libcore.a build/linux/miniz.o build/linux/cattest
           make linux-app CXX=g++-12 SDL2L=$PWD/sdl
           objdump -T build/linux/MKRecomp | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1
+      - name: Recompiler check (Linux module from a synthetic program, no ROMs)
+        run: |
+          make -j4 CXX=g++-12 CC=gcc-12 build/linux/mkrecomp
+          make -j4 BUILD=build/pic CXX=g++-12 CXXFLAGS="-std=c++20 -O1 -fPIC -Wno-deprecated-declarations" build/pic/libcore.a
+          python3 tools/recomp/synth_image.py synth.bin
+          mkdir -p gen && build/linux/mkrecomp --image synth.bin gen
+          tools/recomp/build_module.sh gen test build/pic/libcore.a test.so g++-12
+          nm -D test.so | grep mkrc_get_module
       - name: Package
         run: |
           mkdir -p out/MKRecomp/roms
           cp build/linux/MKRecomp dist/MKRecomp/*.txt out/MKRecomp/
           chmod 755 out/MKRecomp/MKRecomp
           cp dist/MKRecomp/roms/LEEME_README.txt out/MKRecomp/roms/
+          mkdir -p out/MKRecomp/recomp && cp dist/MKRecomp/recomp/LEEME_README.txt out/MKRecomp/recomp/
           tar -C out -czf MKRecomp-linux-x64.tar.gz MKRecomp
       - uses: actions/upload-artifact@v4
         with:

@@ -1,5 +1,6 @@
 // tunit.cpp - Midway T-unit board (see header)
 #include "tunit.h"
+#include "../recomp/rc_abi.h"
 
 // Mortal Kombat T-unit protection sequence (MAME midtunit_m.cpp)
 static const u8 mk_prot_values[] =
@@ -336,4 +337,14 @@ void tunit_machine::write16(offs_t a, u16 data, u16 mask)
 	}
 	if (IN_RANGE(a, 0x01d81060, 0x01d8107f)) return; // watchdog
 	if (IN_RANGE(a, 0xc0000000, 0xc00001ff)) { m_maincpu.io_register_w(WOFF(a, 0xc0000000), data, mask); return; }
+}
+
+std::string tunit_machine::attach_recomp(const rc_module *m)
+{
+	if (!m) { m_maincpu.set_recompiled(nullptr); return {}; }
+	if (m->abi != RC_ABI_VERSION) return "ABI";
+	if (m->layout != tms34010_device::rc_layout_hash()) return "layout";
+	if (m->rom_hash != rc_fnv64(m_roms.program.data(), m_roms.program.size())) return "ROM";
+	m_maincpu.set_recompiled(m);
+	return {};
 }

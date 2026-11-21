@@ -31,6 +31,19 @@ name, inside .zip files too); there is no need to unpack anything.
 A game with missing files is greyed out; selecting it tells you what to copy.
 
 
+STATIC RECOMPILATION (optional)
+-------------------------------
+  With tools/build_recomp.sh from the repository (same version as this
+  package) each game's TMS34010 program is recompiled to C++ from YOUR ROMs and
+  compiled into recomp/<game>.dll (Windows, from WSL) or recomp/<game>.so
+  (Linux). The menu marks those games with REC. The result is identical to the
+  interpreter; anything missed is logged in recomp/<game>.miss and included
+  when you build again. Do not share those files. Instructions:
+  https://github.com/PocketLucho/MORTALKOMBAT-RECOMP
+  Steam: the launch option  --game mk  (or mk2, mk3, umk3) opens that game
+  directly.
+
+
 LINUX AND STEAMOS (Steam Deck, Legion Go S...)
 ----------------------------------------------
   Nothing to install: the program carries what it needs and uses the system

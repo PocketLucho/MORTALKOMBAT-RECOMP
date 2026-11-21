@@ -2,6 +2,14 @@
 // (MK, MK II, MK3, UMK3).
 // Game picker at start-up, SDL2 video/audio/input, per-game NVRAM.
 #include "games.h"
+#include "recomp/rc_abi.h"
+#ifdef _WIN32
+#define RC_EXT ".dll"
+#else
+#define RC_EXT ".so"
+#endif
+#include "cpu/tms34010/tms34010.h"
+#include <set>
 #include "font.h"
 #include "lang.h"
 #include "miniz.h"
@@ -278,6 +286,14 @@ private:
 	std::string m_message;
 	u32 m_message_until = 0;
 	std::vector<bool> m_avail;
+	std::vector<bool> m_has_rc;
+public:
+	std::string m_start_game;                          // --game <id>
+private:                        // recomp/<game>.dll|.so present
+	std::map<std::string, void *> m_rc_libs;           // loaded recompiled modules (kept for the whole run)
+	std::string rc_path(const game_info &g, const char *ext) const;
+	void attach_recomp(const game_info &g);
+	void save_recomp_misses(const game_info &g);
 	std::vector<std::string> m_why;
 	bool m_menu_up = false, m_menu_down = false, m_menu_left = false, m_menu_right = false, m_menu_ok = false, m_menu_back = false, m_menu_net = false;
 	std::vector<float> m_abuf;
@@ -295,12 +311,62 @@ void app::refresh_availability()
 {
 	m_avail.clear();
 	m_why.clear();
+	m_has_rc.clear();
 	for (const auto &g : game_list())
 	{
 		std::string why;
 		m_avail.push_back(m_cat->available(g, why));
 		m_why.push_back(why);
+		m_has_rc.push_back(file_exists(rc_path(g, RC_EXT)));
 	}
+}
+
+// ---------------------------------------------------------------------------
+// statically recompiled programs: recomp/<game>.dll (Windows) or .so (Linux), built on the
+// user's machine from their own ROMs with tools/build_recomp.sh
+// ---------------------------------------------------------------------------
+std::string app::rc_path(const game_info &g, const char *ext) const
+{
+	return path_join(path_join(m_base, "recomp"), std::string(g.id) + ext);
+}
+
+void app::attach_recomp(const game_info &g)
+{
+	std::string path = rc_path(g, RC_EXT);
+	if (!file_exists(path)) return;
+	void *lib = m_rc_libs.count(path) ? m_rc_libs[path] : nullptr;
+	if (!lib)
+	{
+		lib = SDL_LoadObject(path.c_str());
+		if (!lib) { std::fprintf(stderr, "recomp: %s\n", SDL_GetError()); message(tr("Modulo recompilado no valido: ", "Invalid recompiled module: ") + std::string(g.id) + RC_EXT, 5000); return; }
+		m_rc_libs[path] = lib;
+	}
+	auto get = reinterpret_cast<rc_get_module_fn>(SDL_LoadFunction(lib, RC_ENTRY_NAME));
+	std::string r = get ? m_mach->attach_recomp(get()) : "no entry point";
+	std::fprintf(stderr, "recomp %s: %s\n", g.id, r.empty() ? "attached" : r.c_str());
+	if (!r.empty())
+		message(r == "ROM" ? tr("El modulo recompilado es de otras ROMs: vuelve a generarlo", "The recompiled module was built from other ROMs: build it again")
+		                   : tr("Modulo recompilado de otra version del programa: vuelve a generarlo", "Recompiled module from another program version: build it again"), 6000);
+}
+
+// program addresses the module did not cover go to recomp/<game>.miss for the next build
+void app::save_recomp_misses(const game_info &g)
+{
+	auto *c = m_mach ? dynamic_cast<tms34010_device *>(m_mach->maincpu()) : nullptr;
+	if (!c || !c->recompiled() || c->rc_misses.empty()) return;
+	std::string path = rc_path(g, ".miss");
+	std::set<u32> all(c->rc_misses.begin(), c->rc_misses.end());
+	std::vector<u8> old;
+	if (read_whole_file(path, old))
+	{
+		std::istringstream in(std::string(old.begin(), old.end()));
+		std::string line;
+		while (std::getline(in, line)) if (!line.empty()) all.insert(u32(std::strtoul(line.c_str(), nullptr, 16)));
+	}
+	std::string txt;
+	char b[16];
+	for (u32 a : all) { std::snprintf(b, sizeof b, "%08x\n", a); txt += b; }
+	write_whole_file(path, std::vector<u8>(txt.begin(), txt.end()));
 }
 
 void app::open_window()
@@ -524,6 +590,7 @@ bool app::start_game(int index, bool net_client)
 		m_mach->set_dips(m_cfg.dips);
 	}
 	m_mach->reset();
+	attach_recomp(g);
 	m_cur_game = index;
 	m_paused = false;
 	m_test = false;
@@ -540,6 +607,7 @@ void app::stop_game()
 	bool save = !(m_net_game && m_net.role() == netplay::mode::client);
 	if (m_mach && m_cur_game >= 0 && save)
 		write_whole_file(nv_path(game_list()[size_t(m_cur_game)]), m_mach->nvram());
+	if (m_mach && m_cur_game >= 0) save_recomp_misses(game_list()[size_t(m_cur_game)]);
 	m_mach.reset();
 	m_cur_game = -1;
 	if (m_net_game)
@@ -729,6 +797,8 @@ void app::menu_frame()
 		cv.text(20, y, g.title, col);
 		cv.text(cv.w - 20 - cv.text_w(g.hardware) - (g.from_source ? 30 : 0), y, g.hardware, m_avail[size_t(i)] ? 0xffd06050 : 0xff604848, 1, false);
 		if (g.from_source) cv.text(cv.w - 44, y, "SRC", 0xff60ff60);
+		bool rc = size_t(i) < m_has_rc.size() && m_has_rc[size_t(i)];
+		if (rc) cv.text(cv.w - 20 - cv.text_w(g.hardware) - 34, y, "REC", m_avail[size_t(i)] ? 0xffff5040 : 0xff604848, 1, false);
 		cv.text(20, y + 10, std::string(g_lang_en ? g.subtitle_en : g.subtitle).substr(0, 46), m_avail[size_t(i)] ? 0xffc0a090 : 0xff604848, 1, false);
 	}
 	{
@@ -771,7 +841,8 @@ void app::about_frame()
 	gap();
 	line(tr("Placas: T-Unit (MK con sonido ADPCM, MK II con DCS) y Wolf Unit (MK3, UMK3). Base: NBA JAM Recomp.",
 	        "Boards: T-Unit (MK with ADPCM sound, MK II with DCS) and Wolf Unit (MK3, UMK3). Based on NBA JAM Recomp."), 0xffd0b8a8);
-	line(tr("Emulacion: nucleos de MAME (TMS34010, 6809, ADSP-2105) e ymfm.", "Emulation: MAME cores (TMS34010, 6809, ADSP-2105) and ymfm."), 0xffd0b8a8);
+	line(tr("Recompilacion estatica del TMS34010 desde tus ROMs (tools/build_recomp.sh, REC en el menu); sonido y video: nucleos de MAME e ymfm.",
+	        "TMS34010 statically recompiled from your ROMs (tools/build_recomp.sh, REC in the menu); sound and video: MAME cores and ymfm."), 0xffd0b8a8);
 	gap();
 	line("github.com/PocketLucho/MORTALKOMBAT-RECOMP", 0xffb09888);
 	gap();
@@ -1050,6 +1121,9 @@ int app::run()
 	refresh_availability();
 	// start on the first available game
 	for (size_t i = 0; i < m_avail.size(); i++) if (m_avail[i]) { m_sel = int(i); break; }
+	// --game <id> (e.g. a Steam launch option): straight into that game
+	for (size_t i = 0; i < game_list().size(); i++)
+		if (m_start_game == game_list()[i].id && m_avail[i]) { m_sel = int(i); start_game(int(i)); }
 
 	using clock = std::chrono::steady_clock;
 	auto next = clock::now();
@@ -1096,7 +1170,7 @@ int app::run()
 	return 0;
 }
 
-int main(int, char **)
+int main(int argc, char **argv)
 {
 	SDL_SetMainReady();
 #ifndef _WIN32
@@ -1112,6 +1186,8 @@ int main(int, char **)
 	try
 	{
 		app a;
+		for (int i = 1; i + 1 < argc; i++)
+			if (std::string(argv[i]) == "--game") a.m_start_game = argv[i + 1];
 		return a.run();
 	}
 	catch (const std::exception &e)

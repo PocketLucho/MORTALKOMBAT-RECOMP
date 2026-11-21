@@ -18,7 +18,43 @@ If you want to support me, go to https://buymeacoffee.com/pocket_lucho
 | Ultimate Mortal Kombat 3 (1995), rev 1.2 / 1.1 / 1.0 | Wolf Unit + DCS 8K | `umk3.zip` | playable, with sound |
 
 All four were tested with the MAME romsets: they boot, pass the protection checks, run the
-attract mode and reach the fights with picture and sound.
+attract mode and reach the fights with picture and sound. All four can be **statically
+recompiled** from your ROMs (see below).
+
+## Static recompilation (from your ROMs)
+
+Mortal Kombat's arcade source code was never released, so there is no "built from source"
+here as with some NBA JAM games. Instead, `tools/build_recomp.sh` **statically recompiles**
+each game's TMS34010 program from your own ROMs:
+
+1. `tools/recomp/mkrecomp` reads the program from `roms/`, finds the code (from the CPU's 32
+   vectors, branch and call targets, code pointers stored in the ROM and the addresses the
+   program logs in `recomp/<game>.miss`) and writes C++: every instruction is a label;
+   branches (JRcc, JAcc, DSJ, DSJS) are native conditions and `goto`s; register instructions
+   use the interpreter's own macros with the opcode as a constant; the rest call their
+   handler directly, already decoded.
+2. That C++ is compiled into a module: `recomp/<game>.dll` (Windows, MinGW) or `.so` (Linux).
+3. When the game starts the application loads the module (after checking it was built from
+   those ROMs and the same program version) and the menu shows **REC**. Anything not
+   recompiled (code in RAM, addresses not found) runs in the interpreter and is logged in
+   `recomp/<game>.miss` for the next build.
+
+After every instruction the cycle budget and the PC are checked as in the interpreter loop,
+so the result is **identical instruction for instruction**: in the tests (1,800-2,400 frames
+of attract mode and fights) picture and RAM match the interpreter on every frame, and after
+one feedback pass 100% of the executed code runs from the module (MK: ~27,700 recompiled
+instructions, MK II ~34,400, MK3 ~43,800, UMK3 ~49,100).
+
+```sh
+git clone https://github.com/PocketLucho/MORTALKOMBAT-RECOMP   # same version as your MKRecomp
+cd MORTALKOMBAT-RECOMP
+tools/build_recomp.sh /path/to/MKRecomp              # Linux / SteamOS -> recomp/*.so
+tools/build_recomp.sh /path/to/MKRecomp --windows    # WSL -> recomp/*.dll (g++-mingw-w64-x86-64-posix)
+```
+
+Play for a while and run it again to include what was missed. **The generated C++ and the
+modules come from copyrighted ROMs: do not share or upload them.** On SteamOS (no compiler)
+build the `.so` on another Linux / WSL, or in a container (distrobox).
 
 ## No game data included
 

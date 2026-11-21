@@ -14,6 +14,7 @@
 
 #include "emu.h"
 #include "tms34010.h"
+#include "../../../recomp/rc_abi.h"
 #include "34010dsm.h"
 
 #include "input.h" // for video debug keys
@@ -118,95 +119,7 @@ device_memory_interface::space_config_vector tms340x0_device::memory_space_confi
 #include "34010ops.h"
 
 
-/***************************************************************************
-    MACROS
-***************************************************************************/
-
-/* status register definitions */
-#define STBIT_N         (1 << 31)
-#define STBIT_C         (1 << 30)
-#define STBIT_Z         (1 << 29)
-#define STBIT_V         (1 << 28)
-#define STBIT_P         (1 << 25)
-#define STBIT_IE        (1 << 21)
-#define STBIT_FE1       (1 << 11)
-#define STBITS_F1       (0x1f << 6)
-#define STBIT_FE0       (1 << 5)
-#define STBITS_F0       (0x1f << 0)
-
-/* register definitions and shortcuts */
-#define N_FLAG()       (m_st & STBIT_N)
-#define Z_FLAG()       (m_st & STBIT_Z)
-#define C_FLAG()       (m_st & STBIT_C)
-#define V_FLAG()       (m_st & STBIT_V)
-#define P_FLAG()       (m_st & STBIT_P)
-#define IE_FLAG()      (m_st & STBIT_IE)
-#define FE0_FLAG()     (m_st & STBIT_FE0)
-#define FE1_FLAG()     (m_st & STBIT_FE1)
-
-/* register file access */
-#define AREG(i)       (m_regs[i].reg)
-#define AREG_XY(i)    (m_regs[i].xy)
-#define AREG_X(i)     (m_regs[i].xy.x)
-#define AREG_Y(i)     (m_regs[i].xy.y)
-#define BREG(i)       (m_regs[30 - (i)].reg)
-#define BREG_XY(i)    (m_regs[30 - (i)].xy)
-#define BREG_X(i)     (m_regs[30 - (i)].xy.x)
-#define BREG_Y(i)     (m_regs[30 - (i)].xy.y)
-#define SP()          AREG(15)
-#define FW(i)         ((m_st >> (i ? 6 : 0)) & 0x1f)
-#define FWEX(i)       ((m_st >> (i ? 6 : 0)) & 0x3f)
-
-/* opcode decode helpers */
-#define SRCREG(O)       (((O) >> 5) & 0x0f)
-#define DSTREG(O)       ((O) & 0x0f)
-#define SKIP_WORD()     (m_pc += (2 << 3))
-#define SKIP_LONG()     (m_pc += (4 << 3))
-#define PARAM_K(O)      (((O) >> 5) & 0x1f)
-#define PARAM_N(O)      ((O) & 0x1f)
-#define PARAM_REL8(O)   ((int8_t)(O))
-
-/* memory I/O */
-#define WFIELD0(a,b)  (this->*s_wfield_functions[FW(0)])(a,b)
-#define WFIELD1(a,b)  (this->*s_wfield_functions[FW(1)])(a,b)
-#define RFIELD0(a)    (this->*s_rfield_functions[FWEX(0)])(a)
-#define RFIELD1(a)    (this->*s_rfield_functions[FWEX(1)])(a)
-#define WPIXEL(a,b)   (this->*m_pixel_write)(a,b)
-#define RPIXEL(a)     (this->*m_pixel_read)(a)
-
-/* Implied Operands */
-#define SADDR()        BREG(0)
-#define SADDR_X()      BREG_X(0)
-#define SADDR_Y()      BREG_Y(0)
-#define SADDR_XY()     BREG_XY(0)
-#define SPTCH()        BREG(1)
-#define DADDR()        BREG(2)
-#define DADDR_X()      BREG_X(2)
-#define DADDR_Y()      BREG_Y(2)
-#define DADDR_XY()     BREG_XY(2)
-#define DPTCH()        BREG(3)
-#define OFFSET()       BREG(4)
-#define WSTART_X()     BREG_X(5)
-#define WSTART_Y()     BREG_Y(5)
-#define WSTART_XY()    BREG_XY(5)
-#define WEND_X()       BREG_X(6)
-#define WEND_Y()       BREG_Y(6)
-#define WEND_XY()      BREG_XY(6)
-#define DYDX_X()       BREG_X(7)
-#define DYDX_Y()       BREG_Y(7)
-#define DYDX_XY()      BREG_XY(7)
-#define COLOR0()       BREG(8)
-#define COLOR1()       BREG(9)
-#define COUNT()        BREG(10)
-#define INC1_X()       BREG_X(11)
-#define INC1_Y()       BREG_Y(11)
-#define INC2_X()       BREG_X(12)
-#define INC2_Y()       BREG_Y(12)
-#define PATTRN()       BREG(13)
-#define TEMP()         BREG(14)
-
-/* I/O registers */
-#define WINDOW_CHECKING()  ((IOREG(REG_CONTROL) >> 6) & 0x03)
+#include "34010macros.h"
 
 
 
@@ -907,6 +820,52 @@ void tms340x0_device::execute_run()
 void tms34010_device::execute_op(uint16_t op)
 {
 	(this->*s_opcode_table[op >> 4])(op);
+}
+
+// With a recompiled module attached, the recompiled code runs whenever the PC is in it and
+// the interpreter only fills the gaps (code in RAM, addresses the generator did not find).
+// The cycle budget is checked after every instruction, as in the interpreter loop, so the
+// result is identical instruction for instruction.
+void tms34010_device::execute_run()
+{
+	if (!m_rc || debugger_enabled() || (IOREG(REG_HSTCTLH) & 0x8000) || m_reset_deferred)
+	{
+		tms340x0_device::execute_run();
+		return;
+	}
+	m_executing = true;
+	check_interrupt();
+	do
+	{
+		if (!m_rc->run(this))
+		{
+			if (m_pc >= m_rc->base && ((m_pc - m_rc->base) >> 4) < m_rc->words && rc_misses.size() < 4096)
+			{
+				bool seen = false;
+				for (uint32_t a : rc_misses) if (a == m_pc) { seen = true; break; }
+				if (!seen) rc_misses.push_back(m_pc);
+			}
+			m_ppc = m_pc;
+			uint16_t op = ROPCODE();
+			execute_op(op);
+			rc_interpreted++;
+		}
+	} while (m_icount > 0);
+	m_executing = false;
+}
+
+uint64_t tms34010_device::rc_layout_hash()
+{
+	// sizes and the offsets of the members the generated code touches
+	tms34010_device *p = nullptr;
+	auto off = [&](const void *m) { return uint64_t(reinterpret_cast<const char *>(m) - reinterpret_cast<const char *>(p)); };
+	alignas(tms34010_device) static char dummy[sizeof(tms34010_device)];
+	p = reinterpret_cast<tms34010_device *>(dummy);
+	uint64_t v[] = { sizeof(tms34010_device), off(&p->m_pc), off(&p->m_ppc), off(&p->m_st), off(&p->m_icount), off(&p->m_regs[0]),
+	                 off(&p->m_IOregs[0]), off(&p->m_rc), off(&p->m_program), off(&p->m_cache), sizeof(void *) };
+	uint64_t h = 0xcbf29ce484222325ull;
+	for (uint64_t x : v) { h ^= x; h *= 0x100000001b3ull; }
+	return h;
 }
 
 void tms34020_device::execute_op(uint16_t op)

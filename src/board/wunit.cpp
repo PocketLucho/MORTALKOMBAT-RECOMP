@@ -1,5 +1,6 @@
 // wunit.cpp - Midway Wolf-unit board (see header)
 #include "wunit.h"
+#include "../recomp/rc_abi.h"
 
 static constexpr u32 CPU_CLOCK = 50000000;
 static constexpr u32 PIXEL_CLOCK = 8000000;
@@ -282,4 +283,14 @@ void wunit_machine::write16(offs_t a, u16 data, u16 mask)
 	if (IN_RANGE(a, 0x01a00000, 0x01a000ff) || IN_RANGE(a, 0x01a80000, 0x01a800ff)) { m_video.dma_w(WOFF(a & ~0x80000u, 0x01a00000), data, mask); return; }
 	if (IN_RANGE(a, 0x01b00000, 0x01b0001f)) { m_video.midwunit_control_w(0, data, mask); return; }
 	if (IN_RANGE(a, 0xc0000000, 0xc00001ff)) { m_maincpu.io_register_w(WOFF(a, 0xc0000000), data, mask); return; }
+}
+
+std::string wunit_machine::attach_recomp(const rc_module *m)
+{
+	if (!m) { m_maincpu.set_recompiled(nullptr); return {}; }
+	if (m->abi != RC_ABI_VERSION) return "ABI";
+	if (m->layout != tms34010_device::rc_layout_hash()) return "layout";
+	if (m->rom_hash != rc_fnv64(m_roms.program.data(), m_roms.program.size())) return "ROM";
+	m_maincpu.set_recompiled(m);
+	return {};
 }

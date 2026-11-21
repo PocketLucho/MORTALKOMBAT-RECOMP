@@ -56,4 +56,8 @@ public:
 	virtual cpu_device *soundcpu() { return nullptr; }
 	virtual u32 state_hash() const { return 0; }        // main RAM hash (netplay desync check)
 	virtual u32 fingerprint() const { return 0; }       // ROM identity (netplay)
+	// statically recompiled main CPU program (tools/recomp); "" on success, else the reason
+	virtual std::string attach_recomp(const struct rc_module *) { return "not supported"; }
+	virtual bool recompiled() const { return false; }
+	virtual u64 interpreted_instructions() const { return 0; }
 };

@@ -18,7 +18,44 @@ Si quieres apoyarme ve a https://buymeacoffee.com/pocket_lucho
 | Ultimate Mortal Kombat 3 (1995), rev 1.2 / 1.1 / 1.0 | Wolf Unit + DCS 8K | `umk3.zip` | jugable, con sonido |
 
 Los cuatro se han probado con los romsets de MAME: arrancan, pasan las comprobaciones de
-proteccion, muestran el modo demostracion y llegan a los combates con imagen y sonido.
+proteccion, muestran el modo demostracion y llegan a los combates con imagen y sonido. Los
+cuatro se pueden **recompilar estaticamente** desde tus ROMs (ver abajo).
+
+## Recompilacion estatica (desde tus ROMs)
+
+El codigo fuente arcade de Mortal Kombat nunca se ha publicado, asi que aqui no hay "compilado
+desde la fuente" como en algunos juegos de NBA JAM. En su lugar, `tools/build_recomp.sh`
+**recompila estaticamente** el programa TMS34010 de cada juego a partir de tus propias ROMs:
+
+1. `tools/recomp/mkrecomp` lee el programa de `roms/`, encuentra el codigo (desde los 32
+   vectores de la CPU, los destinos de saltos y llamadas, los punteros a codigo que hay en la
+   ROM y las direcciones que el programa anota en `recomp/<juego>.miss`) y escribe C++:
+   cada instruccion es una etiqueta; los saltos (JRcc, JAcc, DSJ, DSJS) son condiciones y
+   `goto` nativos; las instrucciones de registros usan los mismos macros del interprete con
+   el codigo de operacion como constante; el resto llama directamente a su manejador ya
+   decodificado.
+2. Ese C++ se compila como modulo: `recomp/<juego>.dll` (Windows, con MinGW) o `.so` (Linux).
+3. Al arrancar el juego, la aplicacion carga el modulo (comprueba que es de esas ROMs y de la
+   misma version del programa) y el menu lo marca con **REC**. Lo que no este recompilado
+   (codigo en RAM, direcciones no encontradas) lo ejecuta el interprete y queda anotado en
+   `recomp/<juego>.miss` para la siguiente generacion.
+
+Tras cada instruccion se comprueban el presupuesto de ciclos y el PC igual que en el bucle
+del interprete, asi que el resultado es **identico instruccion a instruccion**: en las pruebas
+(1.800-2.400 fotogramas de demo y combate) la imagen y la RAM coinciden en cada fotograma con
+el interprete, y tras una pasada de realimentacion el 100 % del codigo ejecutado corre desde
+el modulo (MK: ~27.700 instrucciones recompiladas, MK II ~34.400, MK3 ~43.800, UMK3 ~49.100).
+
+```sh
+git clone https://github.com/PocketLucho/MORTALKOMBAT-RECOMP   # misma version que tu MKRecomp
+cd MORTALKOMBAT-RECOMP
+tools/build_recomp.sh /ruta/a/MKRecomp              # Linux / SteamOS -> recomp/*.so
+tools/build_recomp.sh /ruta/a/MKRecomp --windows    # WSL -> recomp/*.dll (g++-mingw-w64-x86-64-posix)
+```
+
+Juega un rato y vuelve a ejecutarlo para incluir lo que falto. **El C++ generado y los modulos
+salen de ROMs con derechos de autor: no los compartas ni los subas.** En SteamOS (sin
+compilador) genera el `.so` en otro Linux / WSL, o dentro de un contenedor (distrobox).
 
 ## No incluye datos de los juegos
 

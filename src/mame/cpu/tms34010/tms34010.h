@@ -112,6 +112,7 @@ enum
 class tms340x0_device : public cpu_device,
 						public device_video_interface
 {
+	friend struct rc_cpu;   // statically recompiled code (tools/recomp)
 public:
 	// Configuration structure
 	struct display_params
@@ -954,10 +955,22 @@ protected:
 };
 
 
+struct rc_module;
+
 class tms34010_device : public tms340x0_device
 {
+	friend struct rc_cpu;   // statically recompiled code (tools/recomp)
 public:
 	tms34010_device(const machine_config &mconfig, const char *tag, device_t *owner, uint32_t clock);
+
+	// statically recompiled program (nullptr: interpreter only)
+	void set_recompiled(const rc_module *m) { m_rc = m; }
+	const rc_module *recompiled() const { return m_rc; }
+	uint64_t rc_interpreted = 0;          // instructions run by the interpreter while a module is attached
+	std::vector<uint32_t> rc_misses;      // program ROM addresses the module did not cover (for the next build)
+	// layout signature: generated code accesses this object directly, so host and module
+	// must agree on it
+	static uint64_t rc_layout_hash();
 
 	/* Reads & writes to the 34010 I/O registers; place at 0xc0000000 */
 	virtual void io_register_w(offs_t offset, u16 data, u16 mem_mask = ~u16(0)) override;
@@ -990,6 +1003,9 @@ private:
 
 	memory_access<32, 1, 3, ENDIANNESS_LITTLE>::cache m_cache;
 	memory_access<32, 1, 3, ENDIANNESS_LITTLE>::specific m_program;
+	const rc_module *m_rc = nullptr;
+
+	virtual void execute_run() override;
 };
 
 DECLARE_DEVICE_TYPE(TMS34010, tms34010_device)
