@@ -41,6 +41,8 @@ block 2 (MK, MK II) or run (MK3, UMK3) / low kick**.
 | P2 | I J K L | R | T | Y | F | G | H | 2 | 6 |
 | Pad | d-pad / stick | Y | RB / RT | B | X | LB / LT | A | Start | Back |
 
+Pad Back + Start: back to the game menu (Steam takes the Guide button). On Linux / SteamOS the
+program needs nothing installed; see `dist/MKRecomp/README.txt` for adding it to Steam.
 Esc menu, P pause, F1 help, F2 TEST switch, F3 reset, F4 shader, F5 integer scaling,
 F7 aspect, F11 fullscreen, F12 screenshot, 9 service credit. Keys and the cabinet options
 (free play, country, blood, violence, low blows, attract sound) are set in `mk_recomp.ini`.
@@ -62,8 +64,9 @@ make -j BUILD=build/win CXX=g++ build/win/libcore.a
 make win WINCC=gcc WINCXX=g++ SDL2W=/mingw64     # -> dist/MKRecomp/MKRecomp.exe
 ```
 
-GitHub Actions (`.github/workflows/release.yml`) builds both on every push and publishes them
-as a release when a `v*` tag is pushed.
+GitHub Actions (`.github/workflows/release.yml`) builds both on every push to `main` (Windows
+cross-compiled with MinGW-w64; Linux with a static SDL2 that loads PipeWire / PulseAudio / ALSA and
+X11 / Wayland at run time, for SteamOS) and publishes the release of the day (`vYYYY.MM.DD`).
 
 Headless test: `build/linux/cattest <folder with roms/> mk|mk2|mk3|umk3 <frames> <prefix>`
 runs a game with scripted inputs and writes `.ppm` snapshots and sound statistics.

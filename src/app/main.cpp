@@ -23,6 +23,9 @@
 #include <string>
 #include <thread>
 #include <ctime>
+#ifndef _WIN32
+#include <unistd.h>
+#endif
 #include <vector>
 
 // ---------------------------------------------------------------------------
@@ -144,20 +147,24 @@ static void load_config(const std::string &path, config &c)
 // ---------------------------------------------------------------------------
 struct canvas
 {
-	int w, h;
+	// w x h is the drawing area; the pixels are pw wide, with the drawing area centred
+	// (ox = left margin), so that menus fill a widescreen window without stretching
+	int w, h, pw, ox = 0;
 	std::vector<u32> px;
-	canvas(int W, int H) : w(W), h(H), px(size_t(W) * H, 0xff000000) {}
+	canvas(int W, int H, int PW = 0) : w(W), h(H), pw(std::max(W, PW)), ox((pw - W) / 2), px(size_t(pw) * H, 0xff000000) {}
 	void fill(int x, int y, int ww, int hh, u32 c)
 	{
+		x += ox;
 		for (int j = std::max(0, y); j < std::min(h, y + hh); j++)
-			for (int i = std::max(0, x); i < std::min(w, x + ww); i++) px[size_t(j) * w + i] = c;
+			for (int i = std::max(0, x); i < std::min(pw, x + ww); i++) px[size_t(j) * pw + i] = c;
 	}
 	void blend(int x, int y, int ww, int hh, u32 c, int alpha)
 	{
+		x += ox;
 		for (int j = std::max(0, y); j < std::min(h, y + hh); j++)
-			for (int i = std::max(0, x); i < std::min(w, x + ww); i++)
+			for (int i = std::max(0, x); i < std::min(pw, x + ww); i++)
 			{
-				u32 &d = px[size_t(j) * w + i];
+				u32 &d = px[size_t(j) * pw + i];
 				auto mix = [&](int sh) { return u32((((d >> sh) & 0xff) * (255 - alpha) + ((c >> sh) & 0xff) * alpha) / 255) << sh; };
 				d = 0xff000000 | mix(16) | mix(8) | mix(0);
 			}
@@ -246,6 +253,7 @@ private:
 	cabinet_inputs gather_inputs();
 	void draw_overlay(canvas &cv);
 	void draw_background(canvas &cv);
+	int menu_width() const;
 	float aspect_value() const { static const float a[4] = { 4.0f / 3.0f, 16.0f / 9.0f, 16.0f / 10.0f, 0.0f }; return a[std::clamp(m_cfg.aspect, 0, 3)]; }
 	void save_screenshot(const u32 *px, int w, int h);
 	void refresh_availability();
@@ -321,10 +329,11 @@ void app::open_window()
 void app::present(const u32 *pixels, int w, int h, bool game)
 {
 	int shader = game ? m_cfg.shader : 0;
+	float menu_aspect = float(w) / float(h);          // menus: square pixels at any width
 	if (m_shot && !game) save_screenshot(pixels, w, h);
 	if (m_gl.ok())
 	{
-		m_gl.present(pixels, w, h, shader, game ? m_cfg.integer_scale : false, m_cfg.scan_strength, game ? aspect_value() : 4.0f / 3.0f);
+		m_gl.present(pixels, w, h, shader, game ? m_cfg.integer_scale : false, m_cfg.scan_strength, game ? aspect_value() : menu_aspect);
 		return;
 	}
 	bool smooth = shader == 1;
@@ -340,7 +349,7 @@ void app::present(const u32 *pixels, int w, int h, bool game)
 	int ww, wh;
 	SDL_GetRendererOutputSize(m_ren, &ww, &wh);
 	SDL_Rect dst;
-	output_rect(ww, wh, w, h, game && m_cfg.integer_scale, game ? aspect_value() : 4.0f / 3.0f, dst.x, dst.y, dst.w, dst.h);
+	output_rect(ww, wh, w, h, game && m_cfg.integer_scale, game ? aspect_value() : menu_aspect, dst.x, dst.y, dst.w, dst.h);
 	SDL_SetRenderDrawColor(m_ren, 0, 0, 0, 255);
 	SDL_RenderClear(m_ren);
 	SDL_RenderCopy(m_ren, m_tex, nullptr, &dst);
@@ -386,6 +395,11 @@ void app::poll_events()
 				if (e.cbutton.button == SDL_CONTROLLER_BUTTON_A || e.cbutton.button == SDL_CONTROLLER_BUTTON_START) m_menu_ok = true;
 				if (e.cbutton.button == SDL_CONTROLLER_BUTTON_GUIDE || (m_screen != screen::game && e.cbutton.button == SDL_CONTROLLER_BUTTON_B)) m_menu_back = true;
 				if (e.cbutton.button == SDL_CONTROLLER_BUTTON_Y) m_menu_net = true;
+				// Back + Start together: back to the menu (Guide is taken by Steam on SteamOS / Big Picture)
+				if (e.cbutton.button == SDL_CONTROLLER_BUTTON_START || e.cbutton.button == SDL_CONTROLLER_BUTTON_BACK)
+					if (SDL_GameController *gc = SDL_GameControllerFromInstanceID(e.cbutton.which))
+						if (SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_START) && SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_BACK))
+							m_menu_back = true;
 				break;
 			case SDL_TEXTINPUT:
 				if (m_editing)
@@ -547,25 +561,26 @@ void app::draw_overlay(canvas &cv)
 		cv.blend(0, 0, cv.w, cv.h, 0xff000000, 200);
 		int y = 6;
 		auto line = [&](const std::string &s, u32 c = 0xffffffff) { cv.text(8, y, s, c); y += 11; };
-		line(tr("CONTROLES (teclado / mando)", "CONTROLS (keyboard / pad)"), 0xffffd040);
+		line(tr("CONTROLES (teclado / mando)", "CONTROLS (keyboard / pad)"), 0xffff4040);
 		y += 2;
-		line(tr("     arriba: PA BL PA   abajo: PB BL2/COR", "     top: HP BL HK   bottom: LP BL2/RUN LK"), 0xffb0b0b0);
+		line(tr("     arriba: PA BL PA   abajo: PB BL2/COR", "     top: HP BL HK   bottom: LP BL2/RUN LK"), 0xffb09888);
 		line(tr("J1 flechas  A S D / Z X C   start 1 moneda 5", "P1 arrows   A S D / Z X C   start 1 coin 5"));
 		line(tr("J2 IJKL     R T Y / F G H   start 2 moneda 6", "P2 IJKL     R T Y / F G H   start 2 coin 6"));
 		line(tr("Mando: Y PA  X PB  B PA  A PB  RB bloqueo", "Pad: Y HP  X LP  B HK  A LK  RB block"));
 		line(tr("       LB bloqueo 2 / correr (MK3)  Back moneda", "     LB block 2 / run (MK3)  Back coin"));
-		line(tr("(PA/PB: punetazo y patada altos y bajos)", "(HP/LP/HK/LK: high/low punch and kick)"), 0xffb0b0b0);
+		line(tr("Back+Start: volver al menu", "Back+Start: back to the menu"), 0xffe8a888);
+		line(tr("(PA/PB: punetazo y patada altos y bajos)", "(HP/LP/HK/LK: high/low punch and kick)"), 0xffb09888);
 		y += 3;
-		line(tr("Esc  volver al menu        P  pausa", "Esc  back to menu          P  pause"), 0xffa0e0ff);
-		line(tr("F2   interruptor TEST      F3 reset", "F2   TEST switch           F3 reset"), 0xffa0e0ff);
-		line(tr("F4   video: nitido/suave/scanl./CRT", "F4   video: sharp/smooth/scanl./CRT"), 0xffa0e0ff);
-		line(tr("F5   escalado entero       F6 int. scanlines", "F5   integer scaling       F6 scanline str."), 0xffa0e0ff);
-		line(tr("F7   aspecto: 4:3 / 16:9 / 16:10 / llenar", "F7   aspect: 4:3 / 16:9 / 16:10 / fill"), 0xffa0e0ff);
-		line(tr("F11  pantalla completa     - / +  volumen", "F11  fullscreen            - / +  volume"), 0xffa0e0ff);
-		line(tr("F12  captura de pantalla   9  credito serv.", "F12  screenshot            9  service credit"), 0xffa0e0ff);
+		line(tr("Esc  volver al menu        P  pausa", "Esc  back to menu          P  pause"), 0xffe8a888);
+		line(tr("F2   interruptor TEST      F3 reset", "F2   TEST switch           F3 reset"), 0xffe8a888);
+		line(tr("F4   video: nitido/suave/scanl./CRT", "F4   video: sharp/smooth/scanl./CRT"), 0xffe8a888);
+		line(tr("F5   escalado entero       F6 int. scanlines", "F5   integer scaling       F6 scanline str."), 0xffe8a888);
+		line(tr("F7   aspecto: 4:3 / 16:9 / 16:10 / llenar", "F7   aspect: 4:3 / 16:9 / 16:10 / fill"), 0xffe8a888);
+		line(tr("F11  pantalla completa     - / +  volumen", "F11  fullscreen            - / +  volume"), 0xffe8a888);
+		line(tr("F12  captura de pantalla   9  credito serv.", "F12  screenshot            9  service credit"), 0xffe8a888);
 		y += 3;
-		line(std::string("Video: ") + shader_name(m_cfg.shader) + (m_cfg.integer_scale ? tr(", entero", ", integer") : ""), 0xffb0b0b0);
-		line(tr("Teclas configurables en mk_recomp.ini", "Keys can be changed in mk_recomp.ini"), 0xffb0b0b0);
+		line(std::string("Video: ") + shader_name(m_cfg.shader) + (m_cfg.integer_scale ? tr(", entero", ", integer") : ""), 0xffb09888);
+		line(tr("Teclas configurables en mk_recomp.ini", "Keys can be changed in mk_recomp.ini"), 0xffb09888);
 	}
 	if (m_net_game)
 	{
@@ -591,19 +606,47 @@ void app::draw_overlay(canvas &cv)
 	}
 }
 
+// width of the menu screens: 300 lines high, as wide as the window's shape (4:3 up to 21:9)
+int app::menu_width() const
+{
+	int ww = 4, wh = 3;
+	if (m_win) SDL_GetWindowSize(m_win, &ww, &wh);
+	int w = int(300.0f * float(ww) / float(std::max(1, wh)) + 0.5f) & ~1;
+	return std::clamp(w, 400, 700);
+}
+
+// menu background: near-black crimson gradient with blood running down from the top
 void app::draw_background(canvas &cv)
 {
 	for (int y = 0; y < cv.h; y++)
 	{
-		u32 r = 20 + y / 10, g = 10 + y / 14, b = 40 + y / 5;
-		cv.fill(0, y, cv.w, 1, 0xff000000 | (r << 16) | (g << 8) | b);
+		u32 r = 26 + y * 34 / cv.h, g = 2 + y / 60, b = 4 + y / 50;
+		cv.fill(-cv.ox, y, cv.pw, 1, 0xff000000 | (r << 16) | (g << 8) | b);
 	}
-	u32 t = SDL_GetTicks();
-	for (int i = 0; i < 6; i++)
+	// dark vignette at the sides
+	for (int i = 0; i < 24; i++)
 	{
-		int x = int((t / 30 + i * 80) % 520) - 60;
-		cv.blend(x, 0, 18, cv.h, 0xffff6020, 18);
+		cv.blend(-cv.ox + i, 0, 1, cv.h, 0xff000000, 200 - i * 8);
+		cv.blend(-cv.ox + cv.pw - 1 - i, 0, 1, cv.h, 0xff000000, 200 - i * 8);
 	}
+	// drips: fixed columns (hashed), each one slowly runs, falls off and starts again
+	u32 t = SDL_GetTicks();
+	int n = 14 * cv.pw / 400;
+	for (int i = 0; i < n; i++)
+	{
+		u32 hsh = u32(i) * 2654435761u;
+		int x = int(hsh % u32(cv.pw)) - cv.ox;
+		int wdt = 2 + int((hsh >> 8) % 4);
+		u32 period = 5000 + (hsh >> 12) % 7000;
+		u32 ph = (t + (hsh >> 4) % period) % period;
+		int len = int(u64(cv.h + 40) * ph / period);
+		int alpha = ph > period * 9 / 10 ? int(140 * (period - ph) / (period / 10)) : 140;
+		cv.blend(x, 0, wdt, len, 0xff8a0008, alpha);
+		cv.blend(x - 1, len - 4, wdt + 2, 5, 0xffb00010, alpha);      // the drop
+		cv.blend(x, 0, 1, len - 2, 0xffd03030, alpha / 3);             // wet highlight
+	}
+	// pool at the bottom
+	for (int j = 0; j < 6; j++) cv.blend(-cv.ox, cv.h - 6 + j, cv.pw, 1, 0xff600008, 60 + j * 20);
 }
 
 void app::save_screenshot(const u32 *px, int w, int h)
@@ -644,10 +687,11 @@ void app::menu_frame()
 {
 	const auto &list = game_list();
 	int ng = int(list.size());
-	int n = ng + 2;                       // + language, about
+	int n = ng + 3;                       // + language, about, quit
 	if (m_menu_up) m_sel = (m_sel + n - 1) % n;
 	if (m_menu_down) m_sel = (m_sel + 1) % n;
-	if (m_menu_back) { m_quit = true; return; }
+	// Esc / B: first to "Quit", a second press quits (a stray B on the pad does not close the app)
+	if (m_menu_back) { if (m_sel == n - 1) { m_quit = true; return; } m_sel = n - 1; }
 	if (m_menu_net && m_sel < ng) { m_screen = screen::net_menu; m_net_sel = 0; m_local_ips = net_local_ipv4(); return; }
 	if (m_sel == ng && (m_menu_ok || m_menu_left || m_menu_right))
 	{
@@ -659,16 +703,20 @@ void app::menu_frame()
 	else if (m_menu_ok)
 	{
 		if (m_sel == ng + 1) { m_screen = screen::about; return; }
+		if (m_sel == ng + 2) { m_quit = true; return; }
 		if (m_avail[size_t(m_sel)]) { if (start_game(m_sel)) return; }
 		else message(m_why[size_t(m_sel)], 6000);
 	}
 
-	canvas cv(400, 300);
+#ifdef MK_MENU_SHOT_TEST
+	{ static int f = 0; if (f == 0 && getenv("MKW")) SDL_SetWindowSize(m_win, 1280, 800); if (++f == 90) m_shot = true; if (f == 100) m_quit = true; }
+#endif
+	canvas cv(400, 300, menu_width());
 	draw_background(cv);
-	cv.text(cv.w / 2 - cv.text_w("MORTAL KOMBAT", 3) / 2, 10, "MORTAL KOMBAT", 0xffffc020, 3);
-	cv.text(cv.w / 2 - cv.text_w("RECOMP", 2) / 2, 42, "RECOMP", 0xffffffff, 2);
+	cv.text(cv.w / 2 - cv.text_w("MORTAL KOMBAT", 3) / 2, 10, "MORTAL KOMBAT", 0xffe01818, 3);
+	cv.text(cv.w / 2 - cv.text_w("RECOMP", 2) / 2, 42, "RECOMP", 0xffe8dcc8, 2);
 	std::string pick = tr("Elige un juego", "Choose a game");
-	cv.text(cv.w / 2 - cv.text_w(pick) / 2, 61, pick, 0xffc0c0c0);
+	cv.text(cv.w / 2 - cv.text_w(pick) / 2, 61, pick, 0xffc8b0a0);
 
 	int y0 = 76;
 	for (int i = 0; i < ng; i++)
@@ -676,60 +724,64 @@ void app::menu_frame()
 		const game_info &g = list[size_t(i)];
 		int y = y0 + i * 25;
 		bool sel = i == m_sel;
-		if (sel) cv.blend(12, y - 3, cv.w - 24, 24, 0xffffa020, 90);
-		u32 col = m_avail[size_t(i)] ? (sel ? 0xffffffff : 0xffffe080) : 0xff707070;
+		if (sel) cv.blend(12, y - 3, cv.w - 24, 24, 0xffb00010, 150);
+		u32 col = m_avail[size_t(i)] ? (sel ? 0xffffffff : 0xfff0e0c8) : 0xff705050;
 		cv.text(20, y, g.title, col);
-		cv.text(cv.w - 20 - cv.text_w(g.hardware) - (g.from_source ? 30 : 0), y, g.hardware, m_avail[size_t(i)] ? 0xffc0a0ff : 0xff606060, 1, false);
+		cv.text(cv.w - 20 - cv.text_w(g.hardware) - (g.from_source ? 30 : 0), y, g.hardware, m_avail[size_t(i)] ? 0xffd06050 : 0xff604848, 1, false);
 		if (g.from_source) cv.text(cv.w - 44, y, "SRC", 0xff60ff60);
-		cv.text(20, y + 10, std::string(g_lang_en ? g.subtitle_en : g.subtitle).substr(0, 46), m_avail[size_t(i)] ? 0xffa0c8ff : 0xff606060, 1, false);
+		cv.text(20, y + 10, std::string(g_lang_en ? g.subtitle_en : g.subtitle).substr(0, 46), m_avail[size_t(i)] ? 0xffc0a090 : 0xff604848, 1, false);
 	}
 	{
 		int y = y0 + ng * 25 + 2;
 		bool sel = m_sel == ng;
-		if (sel) cv.blend(12, y - 3, cv.w - 24, 14, 0xffffa020, 90);
-		cv.text(20, y, std::string("Idioma / Language: ") + (g_lang_en ? "English" : "Castellano"), sel ? 0xffffffff : 0xffc8d8ff);
+		if (sel) cv.blend(12, y - 3, cv.w - 24, 14, 0xffb00010, 150);
+		cv.text(20, y, std::string("Idioma / Language: ") + (g_lang_en ? "English" : "Castellano"), sel ? 0xffffffff : 0xffe0d0c0);
 		if (sel) cv.text(cv.w - 36, y, "< >", 0xffffffff);
 		y += 14;
 		sel = m_sel == ng + 1;
-		if (sel) cv.blend(12, y - 3, cv.w - 24, 14, 0xffffa020, 90);
-		cv.text(20, y, tr("Acerca de Mortal Kombat Recomp", "About Mortal Kombat Recomp"), sel ? 0xffffffff : 0xffc8d8ff);
+		if (sel) cv.blend(12, y - 3, cv.w - 24, 14, 0xffb00010, 150);
+		cv.text(20, y, tr("Acerca de Mortal Kombat Recomp", "About Mortal Kombat Recomp"), sel ? 0xffffffff : 0xffe0d0c0);
+		y += 14;
+		sel = m_sel == ng + 2;
+		if (sel) cv.blend(12, y - 3, cv.w - 24, 14, 0xffb00010, 150);
+		cv.text(20, y, tr("Salir", "Quit"), sel ? 0xffffffff : 0xffe0d0c0);
 	}
-	cv.text(8, cv.h - 21, tr("Enter/A: jugar   N/Y: juego en red", "Enter/A: play   N/Y: online game"), 0xffb0b0b0);
-	cv.text(8, cv.h - 11, tr("Esc: salir  F4: video  F11: pant. completa", "Esc: quit  F4: video  F11: fullscreen"), 0xffb0b0b0);
+	cv.text(8, cv.h - 21, tr("Enter/A: jugar   N/Y: juego en red", "Enter/A: play   N/Y: online game"), 0xffb09888);
+	cv.text(8, cv.h - 11, tr("Esc: salir  F4: video  F11: pant. completa", "Esc: quit  F4: video  F11: fullscreen"), 0xffb09888);
 	if (!m_message.empty() && SDL_GetTicks() < m_message_until) menu_message(cv, m_message);
-	present(cv.px.data(), cv.w, cv.h, false);
+	present(cv.px.data(), cv.pw, cv.h, false);
 	SDL_Delay(16);
 }
 
 void app::about_frame()
 {
 	if (m_menu_back || m_menu_ok) { m_screen = screen::menu; return; }
-	canvas cv(400, 300);
+	canvas cv(400, 300, menu_width());
 	draw_background(cv);
-	cv.text(cv.w / 2 - cv.text_w("MORTAL KOMBAT RECOMP", 2) / 2, 8, "MORTAL KOMBAT RECOMP", 0xffffc020, 2);
+	cv.text(cv.w / 2 - cv.text_w("MORTAL KOMBAT RECOMP", 2) / 2, 8, "MORTAL KOMBAT RECOMP", 0xffe01818, 2);
 	std::string ver = "Version " + app_version();
 	cv.text(cv.w / 2 - cv.text_w(ver) / 2, 26, ver, 0xffffffff);
 	int y = 40;
-	auto line = [&](const std::string &s, u32 c = 0xffd8e0ff) { y = cv.text_wrap(12, y, s, c); };
+	auto line = [&](const std::string &s, u32 c = 0xffe8dcd0) { y = cv.text_wrap(12, y, s, c); };
 	auto gap = [&]() { y += 4; };
-	line(tr("Creado por Pocket_lucho con Claude (Anthropic)", "Created by Pocket_lucho with Claude (Anthropic)"), 0xffffe080);
+	line(tr("Creado por Pocket_lucho con Claude (Anthropic)", "Created by Pocket_lucho with Claude (Anthropic)"), 0xfff0e0c8);
 	gap();
 	line(tr("La saga recreativa Mortal Kombat de Midway (MK, MK II, MK3 y UMK3) en una sola aplicacion, con las ROMs de cada usuario.",
 	        "Midway's Mortal Kombat arcade saga (MK, MK II, MK3 and UMK3) in a single application, running each user's own ROMs."));
 	gap();
 	line(tr("Placas: T-Unit (MK con sonido ADPCM, MK II con DCS) y Wolf Unit (MK3, UMK3). Base: NBA JAM Recomp.",
-	        "Boards: T-Unit (MK with ADPCM sound, MK II with DCS) and Wolf Unit (MK3, UMK3). Based on NBA JAM Recomp."), 0xffc0c8e0);
-	line(tr("Emulacion: nucleos de MAME (TMS34010, 6809, ADSP-2105) e ymfm.", "Emulation: MAME cores (TMS34010, 6809, ADSP-2105) and ymfm."), 0xffc0c8e0);
+	        "Boards: T-Unit (MK with ADPCM sound, MK II with DCS) and Wolf Unit (MK3, UMK3). Based on NBA JAM Recomp."), 0xffd0b8a8);
+	line(tr("Emulacion: nucleos de MAME (TMS34010, 6809, ADSP-2105) e ymfm.", "Emulation: MAME cores (TMS34010, 6809, ADSP-2105) and ymfm."), 0xffd0b8a8);
 	gap();
-	line("github.com/PocketLucho/MORTALKOMBAT-RECOMP", 0xffb0b0b0);
+	line("github.com/PocketLucho/MORTALKOMBAT-RECOMP", 0xffb09888);
 	gap();
-	line(tr("Si quieres apoyarme ve a", "If you want to support me, go to"), 0xffffc040);
-	line("https://buymeacoffee.com/pocket_lucho", 0xffffc040);
+	line(tr("Si quieres apoyarme ve a", "If you want to support me, go to"), 0xffffb040);
+	line("https://buymeacoffee.com/pocket_lucho", 0xffffb040);
 	gap();
-	line(tr("Mortal Kombat (c) Midway / Warner Bros. Proyecto sin animo de lucro.", "Mortal Kombat (c) Midway / Warner Bros. Non-profit fan project."), 0xffb0b0b0);
+	line(tr("Mortal Kombat (c) Midway / Warner Bros. Proyecto sin animo de lucro.", "Mortal Kombat (c) Midway / Warner Bros. Non-profit fan project."), 0xffb09888);
 	std::string back = tr("Enter / Esc: volver", "Enter / Esc: back");
-	cv.text(cv.w / 2 - cv.text_w(back) / 2, cv.h - 11, back, 0xffb0b0b0);
-	present(cv.px.data(), cv.w, cv.h, false);
+	cv.text(cv.w / 2 - cv.text_w(back) / 2, cv.h - 11, back, 0xffb09888);
+	present(cv.px.data(), cv.pw, cv.h, false);
 	SDL_Delay(16);
 }
 
@@ -775,11 +827,11 @@ void app::net_menu_frame()
 		else { m_screen = screen::net_lobby; return; }
 	}
 
-	canvas cv(400, 300);
+	canvas cv(400, 300, menu_width());
 	draw_background(cv);
 	std::string head = tr("JUEGO EN RED", "ONLINE GAME");
-	cv.text(cv.w / 2 - cv.text_w(head, 2) / 2, 12, head, 0xffff8020, 2);
-	cv.text(16, 36, g.title, 0xffffe080, 1, false);
+	cv.text(cv.w / 2 - cv.text_w(head, 2) / 2, 12, head, 0xffe01818, 2);
+	cv.text(16, 36, g.title, 0xfff0e0c8, 1, false);
 	std::string join = tr("Unirse a: ", "Join: ");
 	std::string ip = m_editing ? m_edit + ((SDL_GetTicks() / 400) % 2 ? "_" : " ") : (m_cfg.net_host.empty() ? tr("(escribe la IP)", "(type the IP)") : m_cfg.net_host);
 	size_t room = size_t((cv.w - 24) / 8) - join.size();
@@ -794,8 +846,8 @@ void app::net_menu_frame()
 	for (int i = 0; i < nopt; i++)
 	{
 		int y = 56 + i * 20;
-		if (i == m_net_sel) cv.blend(12, y - 4, cv.w - 24, 16, 0xffffa020, 90);
-		cv.text(20, y, opts[i], i == m_net_sel ? 0xffffffff : 0xffc8d8ff);
+		if (i == m_net_sel) cv.blend(12, y - 4, cv.w - 24, 16, 0xffb00010, 150);
+		cv.text(20, y, opts[i], i == m_net_sel ? 0xffffffff : 0xffe0d0c0);
 	}
 	int y = 162;
 	y = cv.text_wrap(12, y, tr("El anfitrion elige el juego (el seleccionado en el menu) y debe abrir el puerto UDP en su router, "
@@ -808,9 +860,9 @@ void app::net_menu_frame()
 	for (auto &s : m_local_ips) ips += (ips.empty() ? "" : ", ") + s;
 	y = cv.text_wrap(12, y + 3, tr("Tu IP local: ", "Your local IP: ") + (ips.empty() ? std::string("?") : ips), 0xff80ff80);
 	cv.text_wrap(12, y + 3, m_editing ? tr("Escribe la IP y pulsa Enter (Ctrl+V pega)", "Type the IP and press Enter (Ctrl+V pastes)")
-	                                  : tr("Enter: elegir  Izq/Der: cambiar  Esc: volver", "Enter: select  Left/Right: change  Esc: back"), 0xffb0b0b0);
+	                                  : tr("Enter: elegir  Izq/Der: cambiar  Esc: volver", "Enter: select  Left/Right: change  Esc: back"), 0xffb09888);
 	if (!m_message.empty() && SDL_GetTicks() < m_message_until) menu_message(cv, m_message);
-	present(cv.px.data(), cv.w, cv.h, false);
+	present(cv.px.data(), cv.pw, cv.h, false);
 	SDL_Delay(16);
 }
 
@@ -866,30 +918,30 @@ void app::net_lobby_frame()
 		return;
 	}
 
-	canvas cv(400, 300);
+	canvas cv(400, 300, menu_width());
 	draw_background(cv);
 	std::string head = tr("JUEGO EN RED", "ONLINE GAME");
-	cv.text(cv.w / 2 - cv.text_w(head, 2) / 2, 12, head, 0xffff8020, 2);
+	cv.text(cv.w / 2 - cv.text_w(head, 2) / 2, 12, head, 0xffe01818, 2);
 	int y = 40;
 	auto line = [&](const std::string &s, u32 c = 0xffffffff) { y = cv.text_wrap(16, y, s, c, 12, true); };
 	if (host)
 	{
-		line(std::string(tr("Anfitrion: ", "Host: ")) + g.title, 0xffffe080);
+		line(std::string(tr("Anfitrion: ", "Host: ")) + g.title, 0xfff0e0c8);
 		std::string ips;
 		for (auto &s : m_local_ips) ips += (ips.empty() ? "" : ", ") + s;
 		line("IP: " + ips, 0xff80ff80);
 		line(tr("Puerto UDP: ", "UDP port: ") + std::to_string(m_cfg.net_port) + tr("   retardo: ", "   delay: ") + std::to_string(m_cfg.net_delay), 0xff80ff80);
 		y += 6;
 		line(tr("Jugadores: ", "Players: ") + std::to_string(m_net.players()) + " / 4");
-		line(tr("J1  tu (anfitrion)", "P1  you (host)"), 0xffc8d8ff);
-		for (auto &p : m_net.peer_list()) line(p, 0xffc8d8ff);
+		line(tr("J1  tu (anfitrion)", "P1  you (host)"), 0xffe0d0c0);
+		for (auto &p : m_net.peer_list()) line(p, 0xffe0d0c0);
 		y = 240;
-		line(tr("Enter: empezar     Esc: cancelar", "Enter: start     Esc: cancel"), 0xffb0b0b0);
+		line(tr("Enter: empezar     Esc: cancelar", "Enter: start     Esc: cancel"), 0xffb09888);
 		line(tr("(puedes empezar solo para probar)", "(you can start alone to try it)"), 0xff808080);
 	}
 	else
 	{
-		line(tr("Conectando con ", "Connecting to ") + m_cfg.net_host + ":" + std::to_string(m_cfg.net_port), 0xffffe080);
+		line(tr("Conectando con ", "Connecting to ") + m_cfg.net_host + ":" + std::to_string(m_cfg.net_port), 0xfff0e0c8);
 		y += 6;
 		if (m_net.local_slot() < 0) line(tr("Esperando respuesta", "Waiting for an answer") + std::string((SDL_GetTicks() / 400) % 4, '.'));
 		else
@@ -900,11 +952,11 @@ void app::net_lobby_frame()
 			                                               : tr("Esperando a que el anfitrion empiece...", "Waiting for the host to start..."));
 		}
 		y = 240;
-		line(tr("Usas los controles de J1 / primer mando", "You use the P1 keys / first pad"), 0xffb0b0b0);
-		line(tr("Esc: cancelar", "Esc: cancel"), 0xffb0b0b0);
+		line(tr("Usas los controles de J1 / primer mando", "You use the P1 keys / first pad"), 0xffb09888);
+		line(tr("Esc: cancelar", "Esc: cancel"), 0xffb09888);
 	}
 	if (!m_message.empty() && SDL_GetTicks() < m_message_until) menu_message(cv, m_message);
-	present(cv.px.data(), cv.w, cv.h, false);
+	present(cv.px.data(), cv.pw, cv.h, false);
 	SDL_Delay(10);
 }
 
@@ -956,11 +1008,16 @@ bool app::game_frame()
 int app::run()
 {
 	SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
-	if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMECONTROLLER) != 0)
+	if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER) != 0)
 	{
+		std::fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());
 		SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Mortal Kombat Recomp", SDL_GetError(), nullptr);
 		return 1;
 	}
+	// no sound is not fatal (e.g. a system without a supported audio server)
+	if (SDL_InitSubSystem(SDL_INIT_AUDIO) != 0) std::fprintf(stderr, "audio: %s\n", SDL_GetError());
+	std::fprintf(stderr, "Mortal Kombat Recomp %s - video: %s, audio: %s\n", app_version().c_str(), SDL_GetCurrentVideoDriver(),
+	             SDL_GetCurrentAudioDriver() ? SDL_GetCurrentAudioDriver() : "none");
 	char *bp = SDL_GetBasePath();
 	m_base = bp ? bp : ".";
 	SDL_free(bp);
@@ -988,6 +1045,7 @@ int app::run()
 	want.samples = 1024;
 	m_audio = SDL_OpenAudioDevice(nullptr, 0, &want, &have, 0);
 	if (m_audio) SDL_PauseAudioDevice(m_audio, 0);
+	else std::fprintf(stderr, "audio device: %s\n", SDL_GetError());
 
 	refresh_availability();
 	// start on the first available game
@@ -1041,6 +1099,16 @@ int app::run()
 int main(int, char **)
 {
 	SDL_SetMainReady();
+#ifndef _WIN32
+	// started from a file manager or Steam: keep the messages in a log next to the program
+	if (!isatty(2))
+		if (char *bp = SDL_GetBasePath())
+		{
+			std::string log = std::string(bp) + "mk_recomp.log";
+			SDL_free(bp);
+			if (std::freopen(log.c_str(), "w", stderr)) std::setvbuf(stderr, nullptr, _IOLBF, 0);
+		}
+#endif
 	try
 	{
 		app a;

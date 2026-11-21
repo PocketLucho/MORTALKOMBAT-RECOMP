@@ -6,7 +6,6 @@ permissions:
 on:
   push:
     branches: [ main ]
-    tags: [ 'v*', '[0-9]*' ]
   pull_request:
   workflow_dispatch:
 
@@ -40,33 +39,78 @@ jobs:
         with:
           name: MKRecomp-windows-x64
           path: MKRecomp-windows-x64.zip
-      - uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/')
-        with:
-          files: MKRecomp-windows-x64.zip
-
+  # Linux / SteamOS: SDL2 built statically from source; its audio (PipeWire, PulseAudio, ALSA)
+  # and video (X11, Wayland) back-ends are loaded at run time, so nothing has to be installed.
+  # Built on Ubuntu 22.04 so it runs on glibc 2.35+ (SteamOS, Ubuntu 22.04+, Fedora...).
   linux:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    runs-on: ubuntu-22.04
+    timeout-minutes: 40
+    env:
+      SDL_VER: 2.30.9
     steps:
       - uses: actions/checkout@v4
       - name: Dependencies
-        run: sudo apt-get update && sudo apt-get install -y libsdl2-dev
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y g++-12 cmake ninja-build libpulse-dev libasound2-dev libpipewire-0.3-dev \
+            libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxss-dev libxfixes-dev libxkbcommon-dev \
+            libwayland-dev wayland-protocols libdecor-0-dev libegl1-mesa-dev libgl1-mesa-dev libgles2-mesa-dev \
+            libdbus-1-dev libudev-dev libibus-1.0-dev
+      - name: SDL2 (static)
+        run: |
+          curl -sSL -o sdl.tar.gz https://github.com/libsdl-org/SDL/releases/download/release-$SDL_VER/SDL2-$SDL_VER.tar.gz
+          tar xzf sdl.tar.gz
+          cmake -S SDL2-$SDL_VER -B sdlbuild -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=$PWD/sdl \
+            -DSDL_SHARED=OFF -DSDL_STATIC=ON -DSDL_STATIC_PIC=ON -DSDL_TEST=OFF
+          cmake --build sdlbuild
+          cmake --install sdlbuild
+          grep -E "SDL_AUDIO_DRIVER_(PULSEAUDIO|PIPEWIRE|ALSA)|SDL_VIDEO_DRIVER_(X11|WAYLAND)\b" sdl/include/SDL2/SDL_config.h
       - name: Build
         run: |
-          make -j4 build/linux/libcore.a build/linux/miniz.o build/linux/cattest
-          make linux-app SDL2L=/usr LINUX_SDL=-lSDL2
+          make -j4 CXX=g++-12 CC=gcc-12 build/linux/libcore.a build/linux/miniz.o build/linux/cattest
+          make linux-app CXX=g++-12 SDL2L=$PWD/sdl
+          objdump -T build/linux/MKRecomp | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1
       - name: Package
         run: |
           mkdir -p out/MKRecomp/roms
           cp build/linux/MKRecomp dist/MKRecomp/*.txt out/MKRecomp/
+          chmod 755 out/MKRecomp/MKRecomp
           cp dist/MKRecomp/roms/LEEME_README.txt out/MKRecomp/roms/
           tar -C out -czf MKRecomp-linux-x64.tar.gz MKRecomp
       - uses: actions/upload-artifact@v4
         with:
           name: MKRecomp-linux-x64
           path: MKRecomp-linux-x64.tar.gz
-      - uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/')
+
+  # every push to main publishes (or refreshes) the release of the day: vYYYY.MM.DD
+  release:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [windows, linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
         with:
-          files: MKRecomp-linux-x64.tar.gz
+          path: pkg
+          merge-multiple: true
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          TAG=v$(date -u +%Y.%m.%d)
+          cat > notes.md <<'EOF'
+          **Mortal Kombat Recomp** for Windows x64 and Linux x64 (SteamOS included).
+
+          No game data is included: copy your own MAME romsets (`mk.zip`, `mk2.zip`, `mk3r10.zip` / `mk3.zip`,
+          `umk3.zip`) into `roms/`. See `LEEME.txt` / `README.txt` inside the package.
+
+          - `MKRecomp-windows-x64.zip` - Windows 10/11 64-bit
+          - `MKRecomp-linux-x64.tar.gz` - x86-64 Linux, glibc 2.35+ (SteamOS / Steam Deck, Ubuntu 22.04+...)
+
+          Created by Pocket_lucho with Claude (Anthropic). Support: https://buymeacoffee.com/pocket_lucho
+          EOF
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" pkg/* --clobber
+          else
+            gh release create "$TAG" pkg/* --target "$GITHUB_SHA" --title "Mortal Kombat Recomp ${TAG#v}" --notes-file notes.md --latest
+          fi

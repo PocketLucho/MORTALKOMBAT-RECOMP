@@ -41,6 +41,8 @@ Panel arcade de MK: fila de arriba **puñetazo alto / bloqueo / patada alta**, f
 | J2 | I J K L | R | T | Y | F | G | H | 2 | 6 |
 | Mando | cruceta / stick | Y | RB / RT | B | X | LB / LT | A | Start | Back |
 
+Mando Back + Start: volver al menu de juegos (Steam usa el boton Guia). En Linux / SteamOS no hay
+que instalar nada; `dist/MKRecomp/LEEME.txt` explica como anadirlo a Steam.
 Esc menu, P pausa, F1 ayuda, F2 interruptor TEST, F3 reset, F4 shader, F5 escalado entero,
 F7 aspecto, F11 pantalla completa, F12 captura, 9 credito de servicio. Las teclas y las
 opciones de la recreativa (juego libre, pais, sangre, violencia, golpes bajos, sonido en
@@ -63,8 +65,9 @@ make -j BUILD=build/win CXX=g++ build/win/libcore.a
 make win WINCC=gcc WINCXX=g++ SDL2W=/mingw64     # -> dist/MKRecomp/MKRecomp.exe
 ```
 
-GitHub Actions (`.github/workflows/release.yml`) compila ambas versiones en cada push y las
-publica como *release* al crear una etiqueta `v*`.
+GitHub Actions (`.github/workflows/release.yml`) compila ambas versiones en cada push a `main`
+(Windows de forma cruzada con MinGW-w64; Linux con SDL2 estatico que carga PipeWire / PulseAudio
+/ ALSA y X11 / Wayland al arrancar, para SteamOS) y publica la *release* del dia (`vAAAA.MM.DD`).
 
 Prueba sin ventana: `build/linux/cattest <carpeta con roms/> mk|mk2|mk3|umk3 <fotogramas> <prefijo>`
 ejecuta un juego con entradas automaticas y guarda capturas `.ppm` y estadisticas de sonido.
