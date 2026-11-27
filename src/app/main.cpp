@@ -1,74 +1,134 @@
 // main.cpp - Mortal Kombat Recomp: one application for the Midway Mortal Kombat arcade saga
-// (MK, MK II, MK3, UMK3).
-// Game picker at start-up, SDL2 video/audio/input, per-game NVRAM.
-#include "games.h"
+// (MK, MK II, MK3, UMK3). SDL2 video / audio / input, the game loop, configuration,
+// per-game NVRAM and the statically recompiled program modules. The menus are in menu.cpp.
+#include "app.h"
 #include "recomp/rc_abi.h"
+#include "cpu/tms34010/tms34010.h"
+#include "lang.h"
+#include "miniz.h"
+#include "shaders.h"
+
 #ifdef _WIN32
 #define RC_EXT ".dll"
 #else
 #define RC_EXT ".so"
 #endif
-#include "cpu/tms34010/tms34010.h"
-#include <set>
-#include "font.h"
-#include "lang.h"
-#include "miniz.h"
-#include "gl_present.h"
-#include "netplay.h"
-#include "shaders.h"
-
-#define SDL_MAIN_HANDLED
-#include <SDL.h>
 
 #include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
-#include <fstream>
-#include <map>
-#include <sstream>
-#include <string>
-#include <thread>
 #include <ctime>
+#include <fstream>
+#include <set>
+#include <sstream>
+#include <thread>
 #ifndef _WIN32
 #include <unistd.h>
 #endif
-#include <vector>
 
 // ---------------------------------------------------------------------------
 // configuration (mk_recomp.ini next to the executable)
 // ---------------------------------------------------------------------------
-struct key_map
-{
-	SDL_Scancode up, down, left, right, hp, bl, hk, lp, lk, b6, start, coin;
-};
+static const char *kActKeys[ACT_COUNT] = { "up", "down", "left", "right", "high_punch", "block", "high_kick", "low_punch", "low_kick", "block2_run", "start", "coin" };
 
-struct config
+void config::reset_keys()
 {
-	int scale = 3;
-	bool fullscreen = false;
-	bool smooth = false;          // legacy (SDL renderer fallback)
-	bool scanlines = false;       // legacy
-	int shader = 3;               // 0 sharp, 1 smooth, 2 scanlines, 3 CRT, 4 CRT curved
-	bool integer_scale = true;    // pixel perfect vertical scale
-	float scan_strength = 0.6f;
-	int aspect = 0;               // 0 = 4:3, 1 = 16:9 (stretched), 2 = 16:10, 3 = fill window
-	bool use_opengl = true;
-	float volume = 0.8f;
-	int net_port = 7845;
-	int net_delay = 4;
-	int lang = -1;                // -1 = system language, 0 = Spanish, 1 = English
-	std::string net_host;
-	dip_settings dips;
-	// arcade panel: HP BL HK on the top row, LP BL2/RUN LK on the bottom row
-	key_map keys[4] = {
+	static const SDL_Scancode def[4][ACT_COUNT] = {
+		// arcade panel: HP BL HK on the top row, LP BL2/RUN LK on the bottom row
 		{ SDL_SCANCODE_UP, SDL_SCANCODE_DOWN, SDL_SCANCODE_LEFT, SDL_SCANCODE_RIGHT, SDL_SCANCODE_A, SDL_SCANCODE_S, SDL_SCANCODE_D, SDL_SCANCODE_Z, SDL_SCANCODE_C, SDL_SCANCODE_X, SDL_SCANCODE_1, SDL_SCANCODE_5 },
 		{ SDL_SCANCODE_I, SDL_SCANCODE_K, SDL_SCANCODE_J, SDL_SCANCODE_L, SDL_SCANCODE_R, SDL_SCANCODE_T, SDL_SCANCODE_Y, SDL_SCANCODE_F, SDL_SCANCODE_H, SDL_SCANCODE_G, SDL_SCANCODE_2, SDL_SCANCODE_6 },
 		{ SDL_SCANCODE_KP_8, SDL_SCANCODE_KP_2, SDL_SCANCODE_KP_4, SDL_SCANCODE_KP_6, SDL_SCANCODE_KP_7, SDL_SCANCODE_KP_DIVIDE, SDL_SCANCODE_KP_9, SDL_SCANCODE_KP_1, SDL_SCANCODE_KP_3, SDL_SCANCODE_KP_0, SDL_SCANCODE_3, SDL_SCANCODE_7 },
 		{ SDL_SCANCODE_UNKNOWN, SDL_SCANCODE_UNKNOWN, SDL_SCANCODE_UNKNOWN, SDL_SCANCODE_UNKNOWN, SDL_SCANCODE_UNKNOWN, SDL_SCANCODE_UNKNOWN, SDL_SCANCODE_UNKNOWN, SDL_SCANCODE_UNKNOWN, SDL_SCANCODE_UNKNOWN, SDL_SCANCODE_UNKNOWN, SDL_SCANCODE_4, SDL_SCANCODE_8 },
 	};
-};
+	std::memcpy(keys, def, sizeof(keys));
+}
+
+void config::reset_pad()
+{
+	// Y high punch, X low punch, B high kick, A low kick, RB/RT block, LB/LT block 2 / run
+	static const int def[ACT_COUNT][2] = {
+		{ SDL_CONTROLLER_BUTTON_DPAD_UP, PAD_NONE }, { SDL_CONTROLLER_BUTTON_DPAD_DOWN, PAD_NONE },
+		{ SDL_CONTROLLER_BUTTON_DPAD_LEFT, PAD_NONE }, { SDL_CONTROLLER_BUTTON_DPAD_RIGHT, PAD_NONE },
+		{ SDL_CONTROLLER_BUTTON_Y, PAD_NONE }, { SDL_CONTROLLER_BUTTON_RIGHTSHOULDER, PAD_RT }, { SDL_CONTROLLER_BUTTON_B, PAD_NONE },
+		{ SDL_CONTROLLER_BUTTON_X, PAD_NONE }, { SDL_CONTROLLER_BUTTON_A, PAD_NONE }, { SDL_CONTROLLER_BUTTON_LEFTSHOULDER, PAD_LT },
+		{ SDL_CONTROLLER_BUTTON_START, PAD_NONE }, { SDL_CONTROLLER_BUTTON_BACK, PAD_NONE },
+	};
+	std::memcpy(pad, def, sizeof(pad));
+}
+
+const char *action_name(int a)
+{
+	static const char *es[ACT_COUNT] = { "Arriba", "Abajo", "Izquierda", "Derecha", "Punetazo alto", "Bloqueo", "Patada alta", "Punetazo bajo",
+	                                     "Patada baja", "Bloqueo 2 / correr", "Start", "Moneda" };
+	static const char *en[ACT_COUNT] = { "Up", "Down", "Left", "Right", "High punch", "Block", "High kick", "Low punch",
+	                                     "Low kick", "Block 2 / run", "Start", "Coin" };
+	a = std::clamp(a, 0, ACT_COUNT - 1);
+	return g_lang_en ? en[a] : es[a];
+}
+
+const char *pad_input_name(int p)
+{
+	switch (p)
+	{
+		case PAD_NONE: return "-";
+		case PAD_LT: return "LT";
+		case PAD_RT: return "RT";
+		case SDL_CONTROLLER_BUTTON_A: return "A";
+		case SDL_CONTROLLER_BUTTON_B: return "B";
+		case SDL_CONTROLLER_BUTTON_X: return "X";
+		case SDL_CONTROLLER_BUTTON_Y: return "Y";
+		case SDL_CONTROLLER_BUTTON_BACK: return "Back";
+		case SDL_CONTROLLER_BUTTON_GUIDE: return "Guide";
+		case SDL_CONTROLLER_BUTTON_START: return "Start";
+		case SDL_CONTROLLER_BUTTON_LEFTSTICK: return "L3";
+		case SDL_CONTROLLER_BUTTON_RIGHTSTICK: return "R3";
+		case SDL_CONTROLLER_BUTTON_LEFTSHOULDER: return "LB";
+		case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER: return "RB";
+		case SDL_CONTROLLER_BUTTON_DPAD_UP: return g_lang_en ? "D-pad up" : "Cruceta arriba";
+		case SDL_CONTROLLER_BUTTON_DPAD_DOWN: return g_lang_en ? "D-pad down" : "Cruceta abajo";
+		case SDL_CONTROLLER_BUTTON_DPAD_LEFT: return g_lang_en ? "D-pad left" : "Cruceta izq.";
+		case SDL_CONTROLLER_BUTTON_DPAD_RIGHT: return g_lang_en ? "D-pad right" : "Cruceta der.";
+		case SDL_CONTROLLER_BUTTON_MISC1: return "Share";
+		case SDL_CONTROLLER_BUTTON_PADDLE1: return "P1";
+		case SDL_CONTROLLER_BUTTON_PADDLE2: return "P2";
+		case SDL_CONTROLLER_BUTTON_PADDLE3: return "P3";
+		case SDL_CONTROLLER_BUTTON_PADDLE4: return "P4";
+		case SDL_CONTROLLER_BUTTON_TOUCHPAD: return "Touchpad";
+	}
+	return "?";
+}
+
+static int pad_input_from_name(const std::string &n)
+{
+	for (int p = -1; p < SDL_CONTROLLER_BUTTON_MAX; p++)
+		if (n == pad_input_name(p)) return p;
+	if (n == "LT") return PAD_LT;
+	if (n == "RT") return PAD_RT;
+	int v = atoi(n.c_str());     // numeric form, language independent
+	return (v >= 0 && v < SDL_CONTROLLER_BUTTON_MAX) || v == PAD_LT || v == PAD_RT ? v : PAD_NONE;
+}
+
+const char *shader_name(int i)
+{
+	static const char *es[] = { "Nitido (pixel perfect)", "Suavizado", "Scanlines", "CRT", "CRT curvo" };
+	static const char *en[] = { "Sharp (pixel perfect)", "Smooth", "Scanlines", "CRT", "Curved CRT" };
+	i = std::clamp(i, 0, kNumShaders - 1);
+	return g_lang_en ? en[i] : es[i];
+}
+
+// version = build date (YYYY.MM.DD), taken from the compiler
+std::string app_version()
+{
+	static const char *months = "JanFebMarAprMayJunJulAugSepOctNovDec";
+	const char *d = __DATE__;            // "Mmm dd yyyy"
+	int mon = int((strstr(months, std::string(d, 3).c_str()) - months) / 3) + 1;
+	int day = atoi(d + 4), year = atoi(d + 7);
+	char b[32];
+	snprintf(b, sizeof(b), "%04d.%02d.%02d", year, mon, day);
+	return b;
+}
 
 static std::string trim(std::string s)
 {
@@ -76,32 +136,32 @@ static std::string trim(std::string s)
 	return a == std::string::npos ? std::string() : s.substr(a, b - a + 1);
 }
 
-static constexpr int kNumKeys = 12;
-static const char *kNames[kNumKeys] = { "up", "down", "left", "right", "high_punch", "block", "high_kick", "low_punch", "low_kick", "block2_run", "start", "coin" };
-
-static SDL_Scancode *key_slot(key_map &k, int i)
-{
-	SDL_Scancode *s[kNumKeys] = { &k.up, &k.down, &k.left, &k.right, &k.hp, &k.bl, &k.hk, &k.lp, &k.lk, &k.b6, &k.start, &k.coin };
-	return s[i];
-}
-
 static void save_config(const std::string &path, config &c)
 {
 	std::ofstream f(path);
-	f << "# Mortal Kombat Recomp - configuration / configuracion\n[general]\n# language: es = castellano, en = English (also in the main menu)\nlanguage="
-	  << (c.lang == 1 ? "en" : c.lang == 0 ? "es" : "auto") << "\n\n[video]\nscale=" << c.scale << "\nfullscreen=" << c.fullscreen
+	f << "# Mortal Kombat Recomp - configuration / configuracion (also from the menu: Esc / Back+Start)\n[general]\n"
+	     "# language: es = castellano, en = English, auto\nlanguage="
+	  << (c.lang == 1 ? "en" : c.lang == 0 ? "es" : "auto")
+	  << "\n# extra folder with ROMs (roms/ next to the program is always searched)\nrom_dir=" << c.rom_dir
+	  << "\n\n[video]\nscale=" << c.scale << "\nfullscreen=" << c.fullscreen
 	  << "\n# shader: 0 nitido, 1 suavizado, 2 scanlines, 3 CRT, 4 CRT curvo\nshader=" << c.shader
-	  << "\n# aspect: 0 = 4:3 original, 1 = 16:9 panoramico, 2 = 16:10, 3 = llenar ventana\naspect=" << c.aspect << "\ninteger_scale=" << c.integer_scale << "\nscanline_strength=" << c.scan_strength
-	  << "\n# opengl=0 usa el renderizador SDL basico (sin shaders)\nopengl=" << c.use_opengl
+	  << "\n# aspect: 0 = 4:3 original, 1 = 16:9, 2 = 16:10, 3 = llenar ventana\naspect=" << c.aspect << "\ninteger_scale=" << c.integer_scale
+	  << "\nscanline_strength=" << c.scan_strength << "\n# opengl=0 usa el renderizador SDL basico (sin shaders)\nopengl=" << c.use_opengl
 	  << "\n\n[audio]\nvolume=" << c.volume
 	  << "\n\n[red]\nport=" << c.net_port << "\ninput_delay=" << c.net_delay << "\nlast_host=" << c.net_host
 	  << "\n\n[dips]\nfree_play=" << c.dips.free_play << "\n# country: 0 USA, 1 French, 2 German\ncountry=" << c.dips.country
 	  << "\nblood=" << c.dips.blood << "\nviolence=" << c.dips.violence << "\nlow_blows=" << c.dips.low_blows
-	  << "\nattract_sound=" << c.dips.attract_sound << "\n\n[keys]\n"
-	  << "# nombres de tecla SDL (https://wiki.libsdl.org/SDL2/SDL_Scancode)\n";
+	  << "\nattract_sound=" << c.dips.attract_sound
+	  << "\n\n[cheats]\n";
+	for (auto &[g, ids] : c.cheats) if (!ids.empty()) f << "cheats_" << g << "=" << ids << "\n";
+	f << "\n[pad]\n# shared by every pad: SDL button names (A B X Y LB RB LT RT Back Start L3 R3 Guide...) or numbers\n";
+	for (int i = 0; i < ACT_COUNT; i++)
+		f << "pad_" << kActKeys[i] << "=" << c.pad[i][0] << "," << c.pad[i][1] << "\n";
+	f << "# menu: 0 Back+Start, 1 Guide, 2 L3+R3   shader: 0 none, 1 R3, 2 L3, 3 Back+RB, 4 Back+LB\nhotkey_menu=" << c.hk_menu
+	  << "\nhotkey_shader=" << c.hk_shader << "\n\n[keys]\n# nombres de tecla SDL (https://wiki.libsdl.org/SDL2/SDL_Scancode)\n";
 	for (int p = 0; p < 4; p++)
-		for (int i = 0; i < kNumKeys; i++)
-			f << "p" << (p + 1) << "_" << kNames[i] << "=" << SDL_GetScancodeName(*key_slot(c.keys[p], i)) << "\n";
+		for (int i = 0; i < ACT_COUNT; i++)
+			f << "p" << (p + 1) << "_" << kActKeys[i] << "=" << SDL_GetScancodeName(c.keys[p][i]) << "\n";
 }
 
 static void load_config(const std::string &path, config &c)
@@ -116,214 +176,56 @@ static void load_config(const std::string &path, config &c)
 		auto eq = line.find('=');
 		if (eq == std::string::npos) continue;
 		std::string k = trim(line.substr(0, eq)), v = trim(line.substr(eq + 1));
+		int iv = atoi(v.c_str());
 		if (k == "language") c.lang = v == "en" ? 1 : v == "es" ? 0 : -1;
-		else if (k == "scale") c.scale = std::clamp(atoi(v.c_str()), 1, 8);
-		else if (k == "fullscreen") c.fullscreen = atoi(v.c_str()) != 0;
-		else if (k == "smooth") c.smooth = atoi(v.c_str()) != 0;
-		else if (k == "scanlines") c.scanlines = atoi(v.c_str()) != 0;
-		else if (k == "shader") c.shader = std::clamp(atoi(v.c_str()), 0, kNumShaders - 1);
-		else if (k == "aspect") c.aspect = std::clamp(atoi(v.c_str()), 0, 3);
-		else if (k == "integer_scale") c.integer_scale = atoi(v.c_str()) != 0;
+		else if (k == "rom_dir") c.rom_dir = v;
+		else if (k == "scale") c.scale = std::clamp(iv, 1, 8);
+		else if (k == "fullscreen") c.fullscreen = iv != 0;
+		else if (k == "shader") c.shader = std::clamp(iv, 0, kNumShaders - 1);
+		else if (k == "aspect") c.aspect = std::clamp(iv, 0, 3);
+		else if (k == "integer_scale") c.integer_scale = iv != 0;
 		else if (k == "scanline_strength") c.scan_strength = std::clamp(float(atof(v.c_str())), 0.0f, 1.0f);
-		else if (k == "opengl") c.use_opengl = atoi(v.c_str()) != 0;
-		else if (k == "port") c.net_port = std::clamp(atoi(v.c_str()), 1024, 65535);
-		else if (k == "input_delay") c.net_delay = std::clamp(atoi(v.c_str()), 1, 10);
+		else if (k == "opengl") c.use_opengl = iv != 0;
+		else if (k == "port") c.net_port = std::clamp(iv, 1024, 65535);
+		else if (k == "input_delay") c.net_delay = std::clamp(iv, 1, 10);
 		else if (k == "last_host") c.net_host = v;
 		else if (k == "volume") c.volume = std::clamp(float(atof(v.c_str())), 0.0f, 1.0f);
-		else if (k == "free_play") c.dips.free_play = atoi(v.c_str()) != 0;
-		else if (k == "blood") c.dips.blood = atoi(v.c_str()) != 0;
-		else if (k == "violence") c.dips.violence = atoi(v.c_str()) != 0;
-		else if (k == "low_blows") c.dips.low_blows = atoi(v.c_str()) != 0;
-		else if (k == "attract_sound") c.dips.attract_sound = atoi(v.c_str()) != 0;
-		else if (k == "country") c.dips.country = std::clamp(atoi(v.c_str()), 0, 2);
+		else if (k == "free_play") c.dips.free_play = iv != 0;
+		else if (k == "blood") c.dips.blood = iv != 0;
+		else if (k == "violence") c.dips.violence = iv != 0;
+		else if (k == "low_blows") c.dips.low_blows = iv != 0;
+		else if (k == "attract_sound") c.dips.attract_sound = iv != 0;
+		else if (k == "country") c.dips.country = std::clamp(iv, 0, 2);
+		else if (k == "hotkey_menu") c.hk_menu = std::clamp(iv, 0, HKM_COUNT - 1);
+		else if (k == "hotkey_shader") c.hk_shader = std::clamp(iv, 0, HKS_COUNT - 1);
+		else if (k.rfind("cheats_", 0) == 0) c.cheats[k.substr(7)] = v;
+		else if (k.rfind("pad_", 0) == 0)
+		{
+			for (int i = 0; i < ACT_COUNT; i++)
+				if (k.substr(4) == kActKeys[i])
+				{
+					auto comma = v.find(',');
+					c.pad[i][0] = pad_input_from_name(trim(v.substr(0, comma)));
+					c.pad[i][1] = comma == std::string::npos ? PAD_NONE : pad_input_from_name(trim(v.substr(comma + 1)));
+				}
+		}
 		else if (k.size() > 3 && k[0] == 'p' && k[2] == '_')
 		{
 			int p = k[1] - '1';
 			if (p < 0 || p > 3) continue;
-			for (int i = 0; i < kNumKeys; i++)
-				if (k.substr(3) == kNames[i])
+			for (int i = 0; i < ACT_COUNT; i++)
+				if (k.substr(3) == kActKeys[i])
 				{
 					SDL_Scancode sc = SDL_GetScancodeFromName(v.c_str());
-					if (sc != SDL_SCANCODE_UNKNOWN) *key_slot(c.keys[p], i) = sc;
+					if (sc != SDL_SCANCODE_UNKNOWN || v.empty()) c.keys[p][i] = sc;
 				}
 		}
 	}
 }
 
 // ---------------------------------------------------------------------------
-// small software text renderer
-// ---------------------------------------------------------------------------
-struct canvas
-{
-	// w x h is the drawing area; the pixels are pw wide, with the drawing area centred
-	// (ox = left margin), so that menus fill a widescreen window without stretching
-	int w, h, pw, ox = 0;
-	std::vector<u32> px;
-	canvas(int W, int H, int PW = 0) : w(W), h(H), pw(std::max(W, PW)), ox((pw - W) / 2), px(size_t(pw) * H, 0xff000000) {}
-	void fill(int x, int y, int ww, int hh, u32 c)
-	{
-		x += ox;
-		for (int j = std::max(0, y); j < std::min(h, y + hh); j++)
-			for (int i = std::max(0, x); i < std::min(pw, x + ww); i++) px[size_t(j) * pw + i] = c;
-	}
-	void blend(int x, int y, int ww, int hh, u32 c, int alpha)
-	{
-		x += ox;
-		for (int j = std::max(0, y); j < std::min(h, y + hh); j++)
-			for (int i = std::max(0, x); i < std::min(pw, x + ww); i++)
-			{
-				u32 &d = px[size_t(j) * pw + i];
-				auto mix = [&](int sh) { return u32((((d >> sh) & 0xff) * (255 - alpha) + ((c >> sh) & 0xff) * alpha) / 255) << sh; };
-				d = 0xff000000 | mix(16) | mix(8) | mix(0);
-			}
-	}
-	void text(int x, int y, const std::string &s, u32 c, int scale = 1, bool shadow = true)
-	{
-		if (shadow) text(x + scale, y + scale, s, 0xff000000, scale, false);
-		for (size_t n = 0; n < s.size(); n++)
-		{
-			unsigned ch = static_cast<unsigned char>(s[n]);
-			if (ch > 127) ch = '?';
-			for (int row = 0; row < 8; row++)
-			{
-				unsigned bits = g_font8[ch][row];
-				for (int col = 0; col < 8; col++)
-					if (bits & (1u << col))
-						fill(x + int(n) * 8 * scale + col * scale, y + row * scale, scale, scale, c);
-			}
-		}
-	}
-	int text_w(const std::string &s, int scale = 1) const { return int(s.size()) * 8 * scale; }
-	// word-wrapped text that never leaves the canvas; returns the y below the last line
-	int text_wrap(int x, int y, const std::string &s, u32 c, int line_h = 10, bool shadow = false)
-	{
-		size_t maxc = size_t(std::max(1, (w - x - 2) / 8));
-		std::string rest = s;
-		while (!rest.empty())
-		{
-			std::string ln = rest;
-			if (ln.size() > maxc)
-			{
-				size_t cut = rest.rfind(' ', maxc);
-				if (cut == std::string::npos || cut == 0) cut = maxc;
-				ln = rest.substr(0, cut);
-				rest = rest.substr(cut);
-				while (!rest.empty() && rest[0] == ' ') rest.erase(0, 1);
-			}
-			else rest.clear();
-			text(x, y, ln, c, 1, shadow);
-			y += line_h;
-		}
-		return y;
-	}
-};
-
-static const char *shader_name(int i)
-{
-	static const char *es[] = { "Nitido (pixel perfect)", "Suavizado", "Scanlines", "CRT", "CRT curvo" };
-	static const char *en[] = { "Sharp (pixel perfect)", "Smooth", "Scanlines", "CRT", "Curved CRT" };
-	i = std::clamp(i, 0, kNumShaders - 1);
-	return g_lang_en ? en[i] : es[i];
-}
-
-// version = build date (YYYY.MM.DD), taken from the compiler
-static std::string app_version()
-{
-	static const char *months = "JanFebMarAprMayJunJulAugSepOctNovDec";
-	const char *d = __DATE__;            // "Mmm dd yyyy"
-	int mon = int((strstr(months, std::string(d, 3).c_str()) - months) / 3) + 1;
-	int day = atoi(d + 4), year = atoi(d + 7);
-	char b[32];
-	snprintf(b, sizeof(b), "%04d.%02d.%02d", year, mon, day);
-	return b;
-}
-
-// ---------------------------------------------------------------------------
-// application
-// ---------------------------------------------------------------------------
-class app
-{
-public:
-	int run();
-private:
-	enum class screen { menu, net_menu, net_lobby, game, about };
-
-	void open_window();
-	void present(const u32 *pixels, int w, int h, bool game);
-	void menu_frame();
-	void net_menu_frame();
-	void net_lobby_frame();
-	void about_frame();
-	bool game_frame();                 // returns true when an emulated frame was run
-	bool start_game(int index, bool net_client = false);
-	void stop_game();
-	void poll_events();
-	cabinet_inputs gather_inputs();
-	void draw_overlay(canvas &cv);
-	void draw_background(canvas &cv);
-	int menu_width() const;
-	float aspect_value() const { static const float a[4] = { 4.0f / 3.0f, 16.0f / 9.0f, 16.0f / 10.0f, 0.0f }; return a[std::clamp(m_cfg.aspect, 0, 3)]; }
-	void save_screenshot(const u32 *px, int w, int h);
-	void refresh_availability();
-	void message(const std::string &m, u32 ms = 2500) { m_message = m; m_message_until = SDL_GetTicks() + ms; }
-	std::string nv_path(const game_info &g) const { return path_join(path_join(m_base, "saves"), std::string(g.id) + ".nv"); }
-
-	std::string m_base, m_cfgpath;
-	config m_cfg;
-	SDL_Window *m_win = nullptr;
-	SDL_Renderer *m_ren = nullptr;
-	SDL_Texture *m_tex = nullptr;
-	gl_presenter m_gl;
-	int m_texw = 0, m_texh = 0;
-	SDL_AudioDeviceID m_audio = 0;
-	std::vector<SDL_GameController *> m_pads;
-	std::unique_ptr<game_catalog> m_cat;
-	std::unique_ptr<arcade_machine> m_mach;
-	screen m_screen = screen::menu;
-	int m_cur_game = -1;
-	int m_sel = 0;
-	bool m_quit = false, m_paused = false, m_show_help = false, m_test = false, m_shot = false;
-	std::string m_message;
-	u32 m_message_until = 0;
-	std::vector<bool> m_avail;
-	std::vector<bool> m_has_rc;
-public:
-	std::string m_start_game;                          // --game <id>
-private:                        // recomp/<game>.dll|.so present
-	std::map<std::string, void *> m_rc_libs;           // loaded recompiled modules (kept for the whole run)
-	std::string rc_path(const game_info &g, const char *ext) const;
-	void attach_recomp(const game_info &g);
-	void save_recomp_misses(const game_info &g);
-	std::vector<std::string> m_why;
-	bool m_menu_up = false, m_menu_down = false, m_menu_left = false, m_menu_right = false, m_menu_ok = false, m_menu_back = false, m_menu_net = false;
-	std::vector<float> m_abuf;
-
-	// netplay
-	netplay m_net;
-	int m_net_sel = 0;
-	bool m_editing = false;
-	std::string m_edit;
-	bool m_net_game = false;           // current game runs under netplay
-	std::vector<std::string> m_local_ips;
-};
-
-void app::refresh_availability()
-{
-	m_avail.clear();
-	m_why.clear();
-	m_has_rc.clear();
-	for (const auto &g : game_list())
-	{
-		std::string why;
-		m_avail.push_back(m_cat->available(g, why));
-		m_why.push_back(why);
-		m_has_rc.push_back(file_exists(rc_path(g, RC_EXT)));
-	}
-}
-
-// ---------------------------------------------------------------------------
 // statically recompiled programs: recomp/<game>.dll (Windows) or .so (Linux), built on the
-// user's machine from their own ROMs with tools/build_recomp.sh
+// user's machine from their own ROMs (build_recomp.sh / RECOMPILAR_RECOMPILE.bat)
 // ---------------------------------------------------------------------------
 std::string app::rc_path(const game_info &g, const char *ext) const
 {
@@ -369,6 +271,50 @@ void app::save_recomp_misses(const game_info &g)
 	write_whole_file(path, std::vector<u8>(txt.begin(), txt.end()));
 }
 
+// ---------------------------------------------------------------------------
+void app::refresh_availability()
+{
+	m_cat = std::make_unique<game_catalog>(m_base, m_cfg.rom_dir);
+	m_avail.clear();
+	m_why.clear();
+	m_has_rc.clear();
+	for (const auto &g : game_list())
+	{
+		std::string why;
+		m_avail.push_back(m_cat->available(g, why));
+		m_why.push_back(why);
+		m_has_rc.push_back(file_exists(rc_path(g, RC_EXT)));
+	}
+}
+
+void app::set_language(int lang)
+{
+	m_cfg.lang = lang;
+	if (lang < 0)
+	{
+		// follow the system language (Spanish -> castellano, anything else -> English)
+		g_lang_en = true;
+		if (SDL_Locale *loc = SDL_GetPreferredLocales())
+		{
+			if (loc[0].language && std::string(loc[0].language) == "es") g_lang_en = false;
+			SDL_free(loc);
+		}
+	}
+	else g_lang_en = lang == 1;
+	if (m_cat) refresh_availability();
+}
+
+void app::apply_fullscreen()
+{
+	SDL_SetWindowFullscreen(m_win, m_cfg.fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
+}
+
+void app::next_shader(int d)
+{
+	m_cfg.shader = (m_cfg.shader + d + kNumShaders) % kNumShaders;
+	message(std::string("Video: ") + shader_name(m_cfg.shader) + (m_gl.ok() ? "" : tr(" (sin OpenGL: aproximado)", " (no OpenGL: approximate)")), 1800);
+}
+
 void app::open_window()
 {
 	int w = 400 * m_cfg.scale, h = 300 * m_cfg.scale;
@@ -392,329 +338,63 @@ void app::open_window()
 	if (!m_ren) m_ren = SDL_CreateRenderer(m_win, -1, SDL_RENDERER_SOFTWARE);
 }
 
-void app::present(const u32 *pixels, int w, int h, bool game)
+// the game picture (with the shader) and the menu layer on top; either may be missing
+void app::present(const u32 *px, int w, int h, const ui_canvas *ui)
 {
-	int shader = game ? m_cfg.shader : 0;
-	float menu_aspect = float(w) / float(h);          // menus: square pixels at any width
-	if (m_shot && !game) save_screenshot(pixels, w, h);
+	if (m_shot && ui && getenv("MK_SHOT_UI")) save_screenshot(ui->px.data(), ui->w, ui->h);   // tests: the menu layer
+	else if (m_shot && px) save_screenshot(px, w, h);
+	else if (m_shot && ui) save_screenshot(ui->px.data(), ui->w, ui->h);
 	if (m_gl.ok())
 	{
-		m_gl.present(pixels, w, h, shader, game ? m_cfg.integer_scale : false, m_cfg.scan_strength, game ? aspect_value() : menu_aspect);
+		m_gl.present(px, w, h, m_cfg.shader, m_cfg.integer_scale, m_cfg.scan_strength, aspect_value(),
+		             ui ? ui->px.data() : nullptr, ui ? ui->w : 0, ui ? ui->h : 0);
 		return;
 	}
-	bool smooth = shader == 1;
-	if (!m_tex || w != m_texw || h != m_texh || m_cfg.smooth != smooth)
-	{
-		if (m_tex) SDL_DestroyTexture(m_tex);
-		m_cfg.smooth = smooth;
-		SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, smooth ? "1" : "0");
-		m_tex = SDL_CreateTexture(m_ren, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, w, h);
-		m_texw = w; m_texh = h;
-	}
-	SDL_UpdateTexture(m_tex, nullptr, pixels, w * 4);
 	int ww, wh;
 	SDL_GetRendererOutputSize(m_ren, &ww, &wh);
-	SDL_Rect dst;
-	output_rect(ww, wh, w, h, game && m_cfg.integer_scale, game ? aspect_value() : menu_aspect, dst.x, dst.y, dst.w, dst.h);
 	SDL_SetRenderDrawColor(m_ren, 0, 0, 0, 255);
 	SDL_RenderClear(m_ren);
-	SDL_RenderCopy(m_ren, m_tex, nullptr, &dst);
-	if (shader >= 2 && dst.h >= h * 2)
+	if (px)
 	{
-		SDL_SetRenderDrawBlendMode(m_ren, SDL_BLENDMODE_BLEND);
-		SDL_SetRenderDrawColor(m_ren, 0, 0, 0, Uint8(140 * m_cfg.scan_strength));
-		for (int y = 0; y < h; y++)
+		bool smooth = m_cfg.shader == 1;
+		if (!m_tex || w != m_texw || h != m_texh)
 		{
-			int yy = dst.y + (y * dst.h) / h + (dst.h / h) - 1;
-			SDL_RenderDrawLine(m_ren, dst.x, yy, dst.x + dst.w, yy);
+			if (m_tex) SDL_DestroyTexture(m_tex);
+			SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, smooth ? "1" : "0");
+			m_tex = SDL_CreateTexture(m_ren, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, w, h);
+			m_texw = w; m_texh = h;
 		}
+		SDL_UpdateTexture(m_tex, nullptr, px, w * 4);
+		SDL_Rect dst;
+		output_rect(ww, wh, w, h, m_cfg.integer_scale, aspect_value(), dst.x, dst.y, dst.w, dst.h);
+		SDL_RenderCopy(m_ren, m_tex, nullptr, &dst);
+		if (m_cfg.shader >= 2 && dst.h >= h * 2)
+		{
+			SDL_SetRenderDrawBlendMode(m_ren, SDL_BLENDMODE_BLEND);
+			SDL_SetRenderDrawColor(m_ren, 0, 0, 0, Uint8(140 * m_cfg.scan_strength));
+			for (int y = 0; y < h; y++)
+			{
+				int yy = dst.y + (y * dst.h) / h + (dst.h / h) - 1;
+				SDL_RenderDrawLine(m_ren, dst.x, yy, dst.x + dst.w, yy);
+			}
+		}
+	}
+	if (ui)
+	{
+		if (!m_uitex || ui->w != m_uiw || ui->h != m_uih)
+		{
+			if (m_uitex) SDL_DestroyTexture(m_uitex);
+			SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "1");
+			m_uitex = SDL_CreateTexture(m_ren, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, ui->w, ui->h);
+			// premultiplied alpha
+			SDL_SetTextureBlendMode(m_uitex, SDL_ComposeCustomBlendMode(SDL_BLENDFACTOR_ONE, SDL_BLENDFACTOR_ONE_MINUS_SRC_ALPHA, SDL_BLENDOPERATION_ADD,
+			                                                            SDL_BLENDFACTOR_ONE, SDL_BLENDFACTOR_ONE_MINUS_SRC_ALPHA, SDL_BLENDOPERATION_ADD));
+			m_uiw = ui->w; m_uih = ui->h;
+		}
+		SDL_UpdateTexture(m_uitex, nullptr, ui->px.data(), ui->w * 4);
+		SDL_RenderCopy(m_ren, m_uitex, nullptr, nullptr);
 	}
 	SDL_RenderPresent(m_ren);
-}
-
-void app::poll_events()
-{
-	m_menu_up = m_menu_down = m_menu_left = m_menu_right = m_menu_ok = m_menu_back = m_menu_net = false;
-	SDL_Event e;
-	while (SDL_PollEvent(&e))
-	{
-		switch (e.type)
-		{
-			case SDL_QUIT: m_quit = true; break;
-			case SDL_CONTROLLERDEVICEADDED:
-				if (SDL_GameController *c = SDL_GameControllerOpen(e.cdevice.which)) m_pads.push_back(c);
-				break;
-			case SDL_CONTROLLERDEVICEREMOVED:
-				for (size_t i = 0; i < m_pads.size(); i++)
-					if (SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(m_pads[i])) == e.cdevice.which)
-					{
-						SDL_GameControllerClose(m_pads[i]);
-						m_pads.erase(m_pads.begin() + long(i));
-						break;
-					}
-				break;
-			case SDL_CONTROLLERBUTTONDOWN:
-				if (e.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_UP) m_menu_up = true;
-				if (e.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_DOWN) m_menu_down = true;
-				if (e.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_LEFT) m_menu_left = true;
-				if (e.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_RIGHT) m_menu_right = true;
-				if (e.cbutton.button == SDL_CONTROLLER_BUTTON_A || e.cbutton.button == SDL_CONTROLLER_BUTTON_START) m_menu_ok = true;
-				if (e.cbutton.button == SDL_CONTROLLER_BUTTON_GUIDE || (m_screen != screen::game && e.cbutton.button == SDL_CONTROLLER_BUTTON_B)) m_menu_back = true;
-				if (e.cbutton.button == SDL_CONTROLLER_BUTTON_Y) m_menu_net = true;
-				// Back + Start together: back to the menu (Guide is taken by Steam on SteamOS / Big Picture)
-				if (e.cbutton.button == SDL_CONTROLLER_BUTTON_START || e.cbutton.button == SDL_CONTROLLER_BUTTON_BACK)
-					if (SDL_GameController *gc = SDL_GameControllerFromInstanceID(e.cbutton.which))
-						if (SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_START) && SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_BACK))
-							m_menu_back = true;
-				break;
-			case SDL_TEXTINPUT:
-				if (m_editing)
-					for (const char *c = e.text.text; *c; c++)
-						if ((isalnum((unsigned char)*c) || *c == '.' || *c == '-' || *c == ':') && m_edit.size() < 60) m_edit += *c;
-				break;
-			case SDL_KEYDOWN:
-			{
-				SDL_Keycode k = e.key.keysym.sym;
-				bool alt = (e.key.keysym.mod & KMOD_ALT) != 0;
-				if (m_editing)
-				{
-					if (k == SDLK_BACKSPACE && !m_edit.empty()) m_edit.pop_back();
-					if (k == SDLK_v && (e.key.keysym.mod & KMOD_CTRL))
-						if (char *t = SDL_GetClipboardText()) { for (char *c = t; *c && m_edit.size() < 60; c++) if (!isspace((unsigned char)*c)) m_edit += *c; SDL_free(t); }
-					if (k == SDLK_RETURN || k == SDLK_KP_ENTER) m_menu_ok = true;
-					if (k == SDLK_ESCAPE) m_menu_back = true;
-					break;
-				}
-				if (k == SDLK_UP) m_menu_up = true;
-				if (k == SDLK_DOWN) m_menu_down = true;
-				if (k == SDLK_LEFT) m_menu_left = true;
-				if (k == SDLK_RIGHT) m_menu_right = true;
-				if (k == SDLK_RETURN && !alt) m_menu_ok = true;
-				if (k == SDLK_ESCAPE) m_menu_back = true;
-				if (k == SDLK_n) m_menu_net = true;
-				if (k == SDLK_F11 || (k == SDLK_RETURN && alt))
-				{
-					m_cfg.fullscreen = !m_cfg.fullscreen;
-					SDL_SetWindowFullscreen(m_win, m_cfg.fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
-				}
-				if (k == SDLK_F1) m_show_help = !m_show_help;
-				if (k == SDLK_F12 || k == SDLK_PRINTSCREEN) m_shot = true;
-				if (k == SDLK_F4)
-				{
-					m_cfg.shader = (m_cfg.shader + 1) % kNumShaders;
-					message(std::string("Video: ") + shader_name(m_cfg.shader) + (m_gl.ok() ? "" : tr(" (sin OpenGL: aproximado)", " (no OpenGL: approximate)")));
-				}
-				if (k == SDLK_F5)
-				{
-					m_cfg.integer_scale = !m_cfg.integer_scale;
-					message(m_cfg.integer_scale ? tr("Escalado entero (pixel perfect): SI", "Integer scaling (pixel perfect): ON") : tr("Escalado entero: NO (llenar pantalla)", "Integer scaling: OFF (fill screen)"));
-				}
-				if (k == SDLK_F7)
-				{
-					static const char *es[4] = { "4:3 (original)", "16:9 panoramico", "16:10 panoramico", "llenar la ventana" };
-					static const char *en[4] = { "4:3 (original)", "16:9 widescreen", "16:10 widescreen", "fill the window" };
-					m_cfg.aspect = (m_cfg.aspect + 1) % 4;
-					message(std::string(tr("Aspecto: ", "Aspect: ")) + (g_lang_en ? en : es)[m_cfg.aspect]);
-				}
-				if (k == SDLK_F6)
-				{
-					m_cfg.scan_strength = m_cfg.scan_strength >= 0.95f ? 0.2f : m_cfg.scan_strength + 0.2f;
-					message(tr("Intensidad de scanlines: ", "Scanline strength: ") + std::to_string(int(m_cfg.scan_strength * 100 + 0.5f)) + "%");
-				}
-				if (k == SDLK_MINUS || k == SDLK_KP_MINUS) { m_cfg.volume = std::max(0.0f, m_cfg.volume - 0.1f); message(tr("Volumen ", "Volume ") + std::to_string(int(m_cfg.volume * 100 + 0.5f)) + "%", 1200); }
-				if (k == SDLK_EQUALS || k == SDLK_PLUS || k == SDLK_KP_PLUS) { m_cfg.volume = std::min(1.0f, m_cfg.volume + 0.1f); message(tr("Volumen ", "Volume ") + std::to_string(int(m_cfg.volume * 100 + 0.5f)) + "%", 1200); }
-				if (m_mach && !m_net_game)
-				{
-					if (k == SDLK_F2) { m_test = !m_test; message(m_test ? tr("Interruptor TEST: ON (menu de servicio)", "TEST switch: ON (service menu)") : tr("Interruptor TEST: OFF", "TEST switch: OFF"), 2000); }
-					if (k == SDLK_F3) { m_mach->reset(); message("Reset", 1500); }
-					if (k == SDLK_p || k == SDLK_PAUSE) m_paused = !m_paused;
-				}
-				break;
-			}
-		}
-	}
-}
-
-cabinet_inputs app::gather_inputs()
-{
-	cabinet_inputs in{};
-	const Uint8 *ks = SDL_GetKeyboardState(nullptr);
-	for (int p = 0; p < 4; p++)
-	{
-		const key_map &k = m_cfg.keys[p];
-		auto &q = in.p[p];
-		q.up = ks[k.up]; q.down = ks[k.down]; q.left = ks[k.left]; q.right = ks[k.right];
-		q.hp = ks[k.hp]; q.bl = ks[k.bl]; q.hk = ks[k.hk]; q.lp = ks[k.lp]; q.lk = ks[k.lk]; q.b6 = ks[k.b6]; q.start = ks[k.start]; q.coin = ks[k.coin];
-	}
-	for (size_t i = 0; i < m_pads.size() && i < 4; i++)
-	{
-		SDL_GameController *c = m_pads[i];
-		auto &q = in.p[i];
-		auto b = [&](SDL_GameControllerButton bt) { return SDL_GameControllerGetButton(c, bt) != 0; };
-		int ax = SDL_GameControllerGetAxis(c, SDL_CONTROLLER_AXIS_LEFTX), ay = SDL_GameControllerGetAxis(c, SDL_CONTROLLER_AXIS_LEFTY);
-		q.up |= b(SDL_CONTROLLER_BUTTON_DPAD_UP) || ay < -12000;
-		q.down |= b(SDL_CONTROLLER_BUTTON_DPAD_DOWN) || ay > 12000;
-		q.left |= b(SDL_CONTROLLER_BUTTON_DPAD_LEFT) || ax < -12000;
-		q.right |= b(SDL_CONTROLLER_BUTTON_DPAD_RIGHT) || ax > 12000;
-		// pad: Y high punch, X low punch, B high kick, A low kick, RB/RT block, LB/LT block 2 / run
-		q.hp |= b(SDL_CONTROLLER_BUTTON_Y);
-		q.lp |= b(SDL_CONTROLLER_BUTTON_X);
-		q.hk |= b(SDL_CONTROLLER_BUTTON_B);
-		q.lk |= b(SDL_CONTROLLER_BUTTON_A);
-		q.bl |= b(SDL_CONTROLLER_BUTTON_RIGHTSHOULDER) || SDL_GameControllerGetAxis(c, SDL_CONTROLLER_AXIS_TRIGGERRIGHT) > 12000;
-		q.b6 |= b(SDL_CONTROLLER_BUTTON_LEFTSHOULDER) || SDL_GameControllerGetAxis(c, SDL_CONTROLLER_AXIS_TRIGGERLEFT) > 12000;
-		q.start |= b(SDL_CONTROLLER_BUTTON_START);
-		q.coin |= b(SDL_CONTROLLER_BUTTON_BACK);
-	}
-	in.test = m_test;
-	in.service = ks[SDL_SCANCODE_9] != 0;
-	return in;
-}
-
-bool app::start_game(int index, bool net_client)
-{
-	const game_info &g = game_list()[size_t(index)];
-	std::string err;
-	SDL_SetWindowTitle(m_win, (std::string(tr("Mortal Kombat Recomp - cargando ", "Mortal Kombat Recomp - loading ")) + g.title + "...").c_str());
-	m_mach = m_cat->create(g, err);
-	if (!m_mach)
-	{
-		message("Error: " + err, 5000);
-		SDL_SetWindowTitle(m_win, "Mortal Kombat Recomp");
-		return false;
-	}
-	if (!net_client)
-	{
-		std::vector<u8> nv;
-		if (read_whole_file(nv_path(g), nv)) m_mach->set_nvram(nv);
-		m_mach->set_dips(m_cfg.dips);
-	}
-	m_mach->reset();
-	attach_recomp(g);
-	m_cur_game = index;
-	m_paused = false;
-	m_test = false;
-	m_screen = screen::game;
-	SDL_SetWindowTitle(m_win, (std::string("Mortal Kombat Recomp - ") + g.title + (m_net_game ? tr("   [EN RED]", "   [ONLINE]") : tr("   [Esc: menu  F1: ayuda]", "   [Esc: menu  F1: help]"))).c_str());
-	SDL_ClearQueuedAudio(m_audio);
-	if (!m_net_game) message(tr("Pulsa F1 para ver los controles", "Press F1 to see the controls"), 3000);
-	return true;
-}
-
-void app::stop_game()
-{
-	// a netplay client never overwrites its own NVRAM with the host's
-	bool save = !(m_net_game && m_net.role() == netplay::mode::client);
-	if (m_mach && m_cur_game >= 0 && save)
-		write_whole_file(nv_path(game_list()[size_t(m_cur_game)]), m_mach->nvram());
-	if (m_mach && m_cur_game >= 0) save_recomp_misses(game_list()[size_t(m_cur_game)]);
-	m_mach.reset();
-	m_cur_game = -1;
-	if (m_net_game)
-	{
-		std::string err = m_net.error();
-		m_net.stop();
-		m_net_game = false;
-		if (!err.empty()) message(tr("Red: ", "Network: ") + err, 6000);
-	}
-	m_screen = screen::menu;
-	SDL_ClearQueuedAudio(m_audio);
-	SDL_SetWindowTitle(m_win, "Mortal Kombat Recomp");
-}
-
-void app::draw_overlay(canvas &cv)
-{
-	if (m_show_help)
-	{
-		cv.blend(0, 0, cv.w, cv.h, 0xff000000, 200);
-		int y = 6;
-		auto line = [&](const std::string &s, u32 c = 0xffffffff) { cv.text(8, y, s, c); y += 11; };
-		line(tr("CONTROLES (teclado / mando)", "CONTROLS (keyboard / pad)"), 0xffff4040);
-		y += 2;
-		line(tr("     arriba: PA BL PA   abajo: PB BL2/COR", "     top: HP BL HK   bottom: LP BL2/RUN LK"), 0xffb09888);
-		line(tr("J1 flechas  A S D / Z X C   start 1 moneda 5", "P1 arrows   A S D / Z X C   start 1 coin 5"));
-		line(tr("J2 IJKL     R T Y / F G H   start 2 moneda 6", "P2 IJKL     R T Y / F G H   start 2 coin 6"));
-		line(tr("Mando: Y PA  X PB  B PA  A PB  RB bloqueo", "Pad: Y HP  X LP  B HK  A LK  RB block"));
-		line(tr("       LB bloqueo 2 / correr (MK3)  Back moneda", "     LB block 2 / run (MK3)  Back coin"));
-		line(tr("Back+Start: volver al menu", "Back+Start: back to the menu"), 0xffe8a888);
-		line(tr("(PA/PB: punetazo y patada altos y bajos)", "(HP/LP/HK/LK: high/low punch and kick)"), 0xffb09888);
-		y += 3;
-		line(tr("Esc  volver al menu        P  pausa", "Esc  back to menu          P  pause"), 0xffe8a888);
-		line(tr("F2   interruptor TEST      F3 reset", "F2   TEST switch           F3 reset"), 0xffe8a888);
-		line(tr("F4   video: nitido/suave/scanl./CRT", "F4   video: sharp/smooth/scanl./CRT"), 0xffe8a888);
-		line(tr("F5   escalado entero       F6 int. scanlines", "F5   integer scaling       F6 scanline str."), 0xffe8a888);
-		line(tr("F7   aspecto: 4:3 / 16:9 / 16:10 / llenar", "F7   aspect: 4:3 / 16:9 / 16:10 / fill"), 0xffe8a888);
-		line(tr("F11  pantalla completa     - / +  volumen", "F11  fullscreen            - / +  volume"), 0xffe8a888);
-		line(tr("F12  captura de pantalla   9  credito serv.", "F12  screenshot            9  service credit"), 0xffe8a888);
-		y += 3;
-		line(std::string("Video: ") + shader_name(m_cfg.shader) + (m_cfg.integer_scale ? tr(", entero", ", integer") : ""), 0xffb09888);
-		line(tr("Teclas configurables en mk_recomp.ini", "Keys can be changed in mk_recomp.ini"), 0xffb09888);
-	}
-	if (m_net_game)
-	{
-		std::string tag = tr("RED J", "NET P") + std::to_string(m_net.local_slot() + 1) + " " + std::to_string(m_net.ping_ms()) + "ms";
-		cv.blend(cv.w - cv.text_w(tag) - 6, 0, cv.text_w(tag) + 6, 10, 0xff000000, 140);
-		cv.text(cv.w - cv.text_w(tag) - 3, 1, tag, 0xff80ff80, 1, false);
-		if (m_net.desynced())
-		{
-			cv.blend(0, 12, cv.w, 12, 0xff800000, 200);
-			cv.text_wrap(4, 14, tr("DESINCRONIZACION: reinicia la partida en red", "DESYNC: restart the online game"), 0xffffffff);
-		}
-		if (m_net.stall_ms() > 400)
-			{
-				std::string wt = tr("Esperando a la red...", "Waiting for the network...");
-				cv.text(cv.w / 2 - cv.text_w(wt) / 2, cv.h / 2 - 4, wt, 0xffffff40);
-			}
-	}
-	if (m_paused) { std::string pt = tr("PAUSA", "PAUSED"); cv.text(cv.w / 2 - cv.text_w(pt, 2) / 2, cv.h / 2 - 8, pt, 0xffffff40, 2); }
-	if (!m_message.empty() && SDL_GetTicks() < m_message_until)
-	{
-		cv.blend(0, cv.h - 14, cv.w, 14, 0xff000000, 170);
-		cv.text(4, cv.h - 11, m_message.substr(0, size_t(cv.w / 8)), 0xffffffff);
-	}
-}
-
-// width of the menu screens: 300 lines high, as wide as the window's shape (4:3 up to 21:9)
-int app::menu_width() const
-{
-	int ww = 4, wh = 3;
-	if (m_win) SDL_GetWindowSize(m_win, &ww, &wh);
-	int w = int(300.0f * float(ww) / float(std::max(1, wh)) + 0.5f) & ~1;
-	return std::clamp(w, 400, 700);
-}
-
-// menu background: near-black crimson gradient with blood running down from the top
-void app::draw_background(canvas &cv)
-{
-	for (int y = 0; y < cv.h; y++)
-	{
-		u32 r = 26 + y * 34 / cv.h, g = 2 + y / 60, b = 4 + y / 50;
-		cv.fill(-cv.ox, y, cv.pw, 1, 0xff000000 | (r << 16) | (g << 8) | b);
-	}
-	// dark vignette at the sides
-	for (int i = 0; i < 24; i++)
-	{
-		cv.blend(-cv.ox + i, 0, 1, cv.h, 0xff000000, 200 - i * 8);
-		cv.blend(-cv.ox + cv.pw - 1 - i, 0, 1, cv.h, 0xff000000, 200 - i * 8);
-	}
-	// drips: fixed columns (hashed), each one slowly runs, falls off and starts again
-	u32 t = SDL_GetTicks();
-	int n = 14 * cv.pw / 400;
-	for (int i = 0; i < n; i++)
-	{
-		u32 hsh = u32(i) * 2654435761u;
-		int x = int(hsh % u32(cv.pw)) - cv.ox;
-		int wdt = 2 + int((hsh >> 8) % 4);
-		u32 period = 5000 + (hsh >> 12) % 7000;
-		u32 ph = (t + (hsh >> 4) % period) % period;
-		int len = int(u64(cv.h + 40) * ph / period);
-		int alpha = ph > period * 9 / 10 ? int(140 * (period - ph) / (period / 10)) : 140;
-		cv.blend(x, 0, wdt, len, 0xff8a0008, alpha);
-		cv.blend(x - 1, len - 4, wdt + 2, 5, 0xffb00010, alpha);      // the drop
-		cv.blend(x, 0, 1, len - 2, 0xffd03030, alpha / 3);             // wet highlight
-	}
-	// pool at the bottom
-	for (int j = 0; j < 6; j++) cv.blend(-cv.ox, cv.h - 6 + j, cv.pw, 1, 0xff600008, 60 + j * 20);
 }
 
 void app::save_screenshot(const u32 *px, int w, int h)
@@ -744,296 +424,289 @@ void app::save_screenshot(const u32 *px, int w, int h)
 	           : std::string(tr("No se pudo guardar ", "Could not save ")) + path, 3000);
 }
 
-// message bar of the menu screens (two lines, word-wrapped)
-static void menu_message(canvas &cv, const std::string &m)
+// ---------------------------------------------------------------------------
+// input
+// ---------------------------------------------------------------------------
+bool app::pad_input_down(SDL_GameController *c, int p) const
 {
-	cv.blend(0, cv.h - 46, cv.w, 24, 0xff800000, 200);
-	cv.text_wrap(4, cv.h - 43, m.substr(0, 96), 0xffffffff, 10, true);
+	if (p == PAD_NONE) return false;
+	if (p == PAD_LT) return SDL_GameControllerGetAxis(c, SDL_CONTROLLER_AXIS_TRIGGERLEFT) > 12000;
+	if (p == PAD_RT) return SDL_GameControllerGetAxis(c, SDL_CONTROLLER_AXIS_TRIGGERRIGHT) > 12000;
+	return SDL_GameControllerGetButton(c, SDL_GameControllerButton(p)) != 0;
 }
 
-void app::menu_frame()
+void app::poll_events()
 {
-	const auto &list = game_list();
-	int ng = int(list.size());
-	int n = ng + 3;                       // + language, about, quit
-	if (m_menu_up) m_sel = (m_sel + n - 1) % n;
-	if (m_menu_down) m_sel = (m_sel + 1) % n;
-	// Esc / B: first to "Quit", a second press quits (a stray B on the pad does not close the app)
-	if (m_menu_back) { if (m_sel == n - 1) { m_quit = true; return; } m_sel = n - 1; }
-	if (m_menu_net && m_sel < ng) { m_screen = screen::net_menu; m_net_sel = 0; m_local_ips = net_local_ipv4(); return; }
-	if (m_sel == ng && (m_menu_ok || m_menu_left || m_menu_right))
+	SDL_Event e;
+	bool in_game = m_screen == screen::game && !m_menu_open;
+	while (SDL_PollEvent(&e))
 	{
-		g_lang_en = !g_lang_en;
-		m_cfg.lang = g_lang_en ? 1 : 0;
-		refresh_availability();
-		save_config(m_cfgpath, m_cfg);
-	}
-	else if (m_menu_ok)
-	{
-		if (m_sel == ng + 1) { m_screen = screen::about; return; }
-		if (m_sel == ng + 2) { m_quit = true; return; }
-		if (m_avail[size_t(m_sel)]) { if (start_game(m_sel)) return; }
-		else message(m_why[size_t(m_sel)], 6000);
-	}
-
-#ifdef MK_MENU_SHOT_TEST
-	{ static int f = 0; if (f == 0 && getenv("MKW")) SDL_SetWindowSize(m_win, 1280, 800); if (++f == 90) m_shot = true; if (f == 100) m_quit = true; }
-#endif
-	canvas cv(400, 300, menu_width());
-	draw_background(cv);
-	cv.text(cv.w / 2 - cv.text_w("MORTAL KOMBAT", 3) / 2, 10, "MORTAL KOMBAT", 0xffe01818, 3);
-	cv.text(cv.w / 2 - cv.text_w("RECOMP", 2) / 2, 42, "RECOMP", 0xffe8dcc8, 2);
-	std::string pick = tr("Elige un juego", "Choose a game");
-	cv.text(cv.w / 2 - cv.text_w(pick) / 2, 61, pick, 0xffc8b0a0);
-
-	int y0 = 76;
-	for (int i = 0; i < ng; i++)
-	{
-		const game_info &g = list[size_t(i)];
-		int y = y0 + i * 25;
-		bool sel = i == m_sel;
-		if (sel) cv.blend(12, y - 3, cv.w - 24, 24, 0xffb00010, 150);
-		u32 col = m_avail[size_t(i)] ? (sel ? 0xffffffff : 0xfff0e0c8) : 0xff705050;
-		cv.text(20, y, g.title, col);
-		cv.text(cv.w - 20 - cv.text_w(g.hardware) - (g.from_source ? 30 : 0), y, g.hardware, m_avail[size_t(i)] ? 0xffd06050 : 0xff604848, 1, false);
-		if (g.from_source) cv.text(cv.w - 44, y, "SRC", 0xff60ff60);
-		bool rc = size_t(i) < m_has_rc.size() && m_has_rc[size_t(i)];
-		if (rc) cv.text(cv.w - 20 - cv.text_w(g.hardware) - 34, y, "REC", m_avail[size_t(i)] ? 0xffff5040 : 0xff604848, 1, false);
-		cv.text(20, y + 10, std::string(g_lang_en ? g.subtitle_en : g.subtitle).substr(0, 46), m_avail[size_t(i)] ? 0xffc0a090 : 0xff604848, 1, false);
-	}
-	{
-		int y = y0 + ng * 25 + 2;
-		bool sel = m_sel == ng;
-		if (sel) cv.blend(12, y - 3, cv.w - 24, 14, 0xffb00010, 150);
-		cv.text(20, y, std::string("Idioma / Language: ") + (g_lang_en ? "English" : "Castellano"), sel ? 0xffffffff : 0xffe0d0c0);
-		if (sel) cv.text(cv.w - 36, y, "< >", 0xffffffff);
-		y += 14;
-		sel = m_sel == ng + 1;
-		if (sel) cv.blend(12, y - 3, cv.w - 24, 14, 0xffb00010, 150);
-		cv.text(20, y, tr("Acerca de Mortal Kombat Recomp", "About Mortal Kombat Recomp"), sel ? 0xffffffff : 0xffe0d0c0);
-		y += 14;
-		sel = m_sel == ng + 2;
-		if (sel) cv.blend(12, y - 3, cv.w - 24, 14, 0xffb00010, 150);
-		cv.text(20, y, tr("Salir", "Quit"), sel ? 0xffffffff : 0xffe0d0c0);
-	}
-	cv.text(8, cv.h - 21, tr("Enter/A: jugar   N/Y: juego en red", "Enter/A: play   N/Y: online game"), 0xffb09888);
-	cv.text(8, cv.h - 11, tr("Esc: salir  F4: video  F11: pant. completa", "Esc: quit  F4: video  F11: fullscreen"), 0xffb09888);
-	if (!m_message.empty() && SDL_GetTicks() < m_message_until) menu_message(cv, m_message);
-	present(cv.px.data(), cv.pw, cv.h, false);
-	SDL_Delay(16);
-}
-
-void app::about_frame()
-{
-	if (m_menu_back || m_menu_ok) { m_screen = screen::menu; return; }
-	canvas cv(400, 300, menu_width());
-	draw_background(cv);
-	cv.text(cv.w / 2 - cv.text_w("MORTAL KOMBAT RECOMP", 2) / 2, 8, "MORTAL KOMBAT RECOMP", 0xffe01818, 2);
-	std::string ver = "Version " + app_version();
-	cv.text(cv.w / 2 - cv.text_w(ver) / 2, 26, ver, 0xffffffff);
-	int y = 40;
-	auto line = [&](const std::string &s, u32 c = 0xffe8dcd0) { y = cv.text_wrap(12, y, s, c); };
-	auto gap = [&]() { y += 4; };
-	line(tr("Creado por Pocket_lucho con Claude (Anthropic)", "Created by Pocket_lucho with Claude (Anthropic)"), 0xfff0e0c8);
-	gap();
-	line(tr("La saga recreativa Mortal Kombat de Midway (MK, MK II, MK3 y UMK3) en una sola aplicacion, con las ROMs de cada usuario.",
-	        "Midway's Mortal Kombat arcade saga (MK, MK II, MK3 and UMK3) in a single application, running each user's own ROMs."));
-	gap();
-	line(tr("Placas: T-Unit (MK con sonido ADPCM, MK II con DCS) y Wolf Unit (MK3, UMK3). Base: NBA JAM Recomp.",
-	        "Boards: T-Unit (MK with ADPCM sound, MK II with DCS) and Wolf Unit (MK3, UMK3). Based on NBA JAM Recomp."), 0xffd0b8a8);
-	line(tr("Recompilacion estatica del TMS34010 desde tus ROMs (tools/build_recomp.sh, REC en el menu); sonido y video: nucleos de MAME e ymfm.",
-	        "TMS34010 statically recompiled from your ROMs (tools/build_recomp.sh, REC in the menu); sound and video: MAME cores and ymfm."), 0xffd0b8a8);
-	gap();
-	line("github.com/PocketLucho/MORTALKOMBAT-RECOMP", 0xffb09888);
-	gap();
-	line(tr("Si quieres apoyarme ve a", "If you want to support me, go to"), 0xffffb040);
-	line("https://buymeacoffee.com/pocket_lucho", 0xffffb040);
-	gap();
-	line(tr("Mortal Kombat (c) Midway / Warner Bros. Proyecto sin animo de lucro.", "Mortal Kombat (c) Midway / Warner Bros. Non-profit fan project."), 0xffb09888);
-	std::string back = tr("Enter / Esc: volver", "Enter / Esc: back");
-	cv.text(cv.w / 2 - cv.text_w(back) / 2, cv.h - 11, back, 0xffb09888);
-	present(cv.px.data(), cv.pw, cv.h, false);
-	SDL_Delay(16);
-}
-
-void app::net_menu_frame()
-{
-	const game_info &g = game_list()[size_t(m_sel)];
-	const int nopt = 5;
-	bool join_now = false;
-	if (m_editing)
-	{
-		if (m_menu_ok) { m_editing = false; SDL_StopTextInput(); m_cfg.net_host = m_edit; join_now = !m_edit.empty(); }
-		else if (m_menu_back) { m_editing = false; SDL_StopTextInput(); }
-	}
-	else
-	{
-		if (m_menu_back) { m_screen = screen::menu; return; }
-		if (m_menu_up) m_net_sel = (m_net_sel + nopt - 1) % nopt;
-		if (m_menu_down) m_net_sel = (m_net_sel + 1) % nopt;
-		if (m_net_sel == 1 && (m_menu_left || m_menu_right)) { m_edit = m_cfg.net_host; m_editing = true; SDL_StartTextInput(); }
-		if (m_net_sel == 2 && (m_menu_left || m_menu_right)) m_cfg.net_port = std::clamp(m_cfg.net_port + (m_menu_right ? 1 : -1), 1024, 65535);
-		if (m_net_sel == 3 && (m_menu_left || m_menu_right)) m_cfg.net_delay = std::clamp(m_cfg.net_delay + (m_menu_right ? 1 : -1), 1, 10);
-		if (m_menu_ok)
+		switch (e.type)
 		{
-			std::string err;
-			if (m_net_sel == 0)
+			case SDL_QUIT: m_quit = true; break;
+			case SDL_CONTROLLERDEVICEADDED:
+				if (SDL_GameController *c = SDL_GameControllerOpen(e.cdevice.which)) m_pads.push_back(c);
+				break;
+			case SDL_CONTROLLERDEVICEREMOVED:
+				for (size_t i = 0; i < m_pads.size(); i++)
+					if (SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(m_pads[i])) == e.cdevice.which)
+					{
+						SDL_GameControllerClose(m_pads[i]);
+						m_pads.erase(m_pads.begin() + long(i));
+						break;
+					}
+				break;
+			case SDL_CONTROLLERAXISMOTION:
+				if (ui_capturing() && e.caxis.value > 20000)
+				{
+					if (e.caxis.axis == SDL_CONTROLLER_AXIS_TRIGGERLEFT) ui_capture_pad(PAD_LT);
+					if (e.caxis.axis == SDL_CONTROLLER_AXIS_TRIGGERRIGHT) ui_capture_pad(PAD_RT);
+				}
+				break;
+			case SDL_CONTROLLERBUTTONDOWN:
 			{
-				if (!m_avail[size_t(m_sel)]) message(m_why[size_t(m_sel)], 6000);
-				else if (!m_net.host(u16(m_cfg.net_port), err)) message(tr("Red: ", "Network: ") + err, 6000);
-				else { m_screen = screen::net_lobby; return; }
+				int b = e.cbutton.button;
+				SDL_GameController *gc = SDL_GameControllerFromInstanceID(e.cbutton.which);
+				auto held = [&](SDL_GameControllerButton x) { return gc && SDL_GameControllerGetButton(gc, x); };
+				if (ui_capturing()) { ui_capture_pad(b); break; }
+				// shortcuts (also while playing)
+				bool menu_combo = (m_cfg.hk_menu == HKM_BACK_START && (b == SDL_CONTROLLER_BUTTON_START || b == SDL_CONTROLLER_BUTTON_BACK) &&
+				                   held(SDL_CONTROLLER_BUTTON_START) && held(SDL_CONTROLLER_BUTTON_BACK)) ||
+				                  (m_cfg.hk_menu == HKM_GUIDE && b == SDL_CONTROLLER_BUTTON_GUIDE) ||
+				                  (m_cfg.hk_menu == HKM_L3_R3 && (b == SDL_CONTROLLER_BUTTON_LEFTSTICK || b == SDL_CONTROLLER_BUTTON_RIGHTSTICK) &&
+				                   held(SDL_CONTROLLER_BUTTON_LEFTSTICK) && held(SDL_CONTROLLER_BUTTON_RIGHTSTICK));
+				bool shader_combo = (m_cfg.hk_shader == HKS_R3 && b == SDL_CONTROLLER_BUTTON_RIGHTSTICK && !held(SDL_CONTROLLER_BUTTON_LEFTSTICK)) ||
+				                    (m_cfg.hk_shader == HKS_L3 && b == SDL_CONTROLLER_BUTTON_LEFTSTICK && !held(SDL_CONTROLLER_BUTTON_RIGHTSTICK)) ||
+				                    (m_cfg.hk_shader == HKS_BACK_RB && b == SDL_CONTROLLER_BUTTON_RIGHTSHOULDER && held(SDL_CONTROLLER_BUTTON_BACK)) ||
+				                    (m_cfg.hk_shader == HKS_BACK_LB && b == SDL_CONTROLLER_BUTTON_LEFTSHOULDER && held(SDL_CONTROLLER_BUTTON_BACK));
+				if (in_game)
+				{
+					if (menu_combo) open_pause_menu();
+					else if (shader_combo) next_shader(1);
+					break;
+				}
+				if (menu_combo && m_screen == screen::game) { close_menu(); break; }
+				if (shader_combo && m_screen == screen::game) { next_shader(1); break; }
+				// menu navigation
+				switch (b)
+				{
+					case SDL_CONTROLLER_BUTTON_DPAD_UP: ui_key(UK_UP); break;
+					case SDL_CONTROLLER_BUTTON_DPAD_DOWN: ui_key(UK_DOWN); break;
+					case SDL_CONTROLLER_BUTTON_DPAD_LEFT: ui_key(UK_LEFT); break;
+					case SDL_CONTROLLER_BUTTON_DPAD_RIGHT: ui_key(UK_RIGHT); break;
+					case SDL_CONTROLLER_BUTTON_A: ui_key(UK_OK); break;
+					case SDL_CONTROLLER_BUTTON_START: if (!held(SDL_CONTROLLER_BUTTON_BACK)) ui_key(UK_OK); break;
+					case SDL_CONTROLLER_BUTTON_B: case SDL_CONTROLLER_BUTTON_GUIDE: ui_key(UK_BACK); break;
+					case SDL_CONTROLLER_BUTTON_LEFTSHOULDER: ui_key(UK_PREV); break;
+					case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER: ui_key(UK_NEXT); break;
+					case SDL_CONTROLLER_BUTTON_Y: ui_key(UK_NET); break;
+				}
+				break;
 			}
-			if (m_net_sel == 1)
+			case SDL_TEXTINPUT:
+				if (ui_editing())
+					for (const char *c = e.text.text; *c; c++)
+						if (m_edit.size() < 200 && (unsigned char)*c >= 32) m_edit += *c;
+				break;
+			case SDL_KEYDOWN:
 			{
-				if (m_cfg.net_host.empty()) { m_edit.clear(); m_editing = true; SDL_StartTextInput(); }
-				else join_now = true;
+				SDL_Keycode k = e.key.keysym.sym;
+				bool alt = (e.key.keysym.mod & KMOD_ALT) != 0;
+				if (ui_capturing()) { if (!e.key.repeat) ui_capture_key(e.key.keysym.scancode); break; }
+				if (ui_editing())
+				{
+					if (k == SDLK_BACKSPACE && !m_edit.empty())
+					{
+						m_edit.pop_back();
+						while (!m_edit.empty() && (static_cast<unsigned char>(m_edit.back()) & 0xc0) == 0x80) m_edit.pop_back();
+					}
+					if (k == SDLK_v && (e.key.keysym.mod & KMOD_CTRL))
+						if (char *t = SDL_GetClipboardText()) { for (char *c = t; *c && m_edit.size() < 200; c++) if (*c != '\n' && *c != '\r') m_edit += *c; SDL_free(t); }
+					if (k == SDLK_RETURN || k == SDLK_KP_ENTER) ui_key(UK_OK);
+					if (k == SDLK_ESCAPE) ui_key(UK_BACK);
+					break;
+				}
+				if (k == SDLK_F11 || (k == SDLK_RETURN && alt)) { m_cfg.fullscreen = !m_cfg.fullscreen; apply_fullscreen(); break; }
+				if (k == SDLK_F12 || k == SDLK_PRINTSCREEN) { m_shot = true; break; }
+				if (k == SDLK_F4) { next_shader((e.key.keysym.mod & KMOD_SHIFT) ? -1 : 1); break; }
+				if (k == SDLK_F5) { m_cfg.integer_scale = !m_cfg.integer_scale; message(m_cfg.integer_scale ? tr("Escalado entero: SI", "Integer scaling: ON") : tr("Escalado entero: NO", "Integer scaling: OFF")); break; }
+				if (k == SDLK_F7) { m_cfg.aspect = (m_cfg.aspect + 1) % 4; message(tr("Aspecto cambiado (menu > Video)", "Aspect changed (menu > Video)"), 1500); break; }
+				if (k == SDLK_MINUS || k == SDLK_KP_MINUS) { m_cfg.volume = std::max(0.0f, m_cfg.volume - 0.1f); message(tr("Volumen ", "Volume ") + std::to_string(int(m_cfg.volume * 100 + 0.5f)) + "%", 1200); break; }
+				if (k == SDLK_EQUALS || k == SDLK_PLUS || k == SDLK_KP_PLUS) { m_cfg.volume = std::min(1.0f, m_cfg.volume + 0.1f); message(tr("Volumen ", "Volume ") + std::to_string(int(m_cfg.volume * 100 + 0.5f)) + "%", 1200); break; }
+				if (in_game)
+				{
+					if (k == SDLK_ESCAPE || k == SDLK_F1 || k == SDLK_p || k == SDLK_PAUSE) open_pause_menu();
+					if (m_mach && !m_net_game)
+					{
+						if (k == SDLK_F2) { m_test = !m_test; message(m_test ? tr("Interruptor TEST: ON (menu de servicio)", "TEST switch: ON (service menu)") : tr("Interruptor TEST: OFF", "TEST switch: OFF"), 2000); }
+						if (k == SDLK_F3) { m_mach->reset(); message("Reset", 1500); }
+					}
+					break;
+				}
+				if (k == SDLK_F1 && m_screen == screen::game) { close_menu(); break; }
+				switch (k)
+				{
+					case SDLK_UP: ui_key(UK_UP); break;
+					case SDLK_DOWN: ui_key(UK_DOWN); break;
+					case SDLK_LEFT: ui_key(UK_LEFT); break;
+					case SDLK_RIGHT: ui_key(UK_RIGHT); break;
+					case SDLK_RETURN: case SDLK_KP_ENTER: case SDLK_SPACE: ui_key(UK_OK); break;
+					case SDLK_ESCAPE: case SDLK_BACKSPACE: ui_key(UK_BACK); break;
+					case SDLK_TAB: ui_key((e.key.keysym.mod & KMOD_SHIFT) ? UK_PREV : UK_NEXT); break;
+					case SDLK_PAGEUP: case SDLK_q: ui_key(UK_PREV); break;
+					case SDLK_PAGEDOWN: case SDLK_e: ui_key(UK_NEXT); break;
+					case SDLK_n: ui_key(UK_NET); break;
+				}
+				break;
 			}
-			if (m_net_sel == 4) { m_screen = screen::menu; return; }
 		}
 	}
-	if (join_now)
+	// menus: the left stick moves like the d-pad, with repeat
+	if (!in_game && !ui_capturing())
 	{
-		std::string err;
-		if (!m_net.join(m_cfg.net_host, u16(m_cfg.net_port), err)) message(tr("Red: ", "Network: ") + err, 6000);
-		else { m_screen = screen::net_lobby; return; }
+		int dir = -1;
+		for (auto *c : m_pads)
+		{
+			int ax = SDL_GameControllerGetAxis(c, SDL_CONTROLLER_AXIS_LEFTX), ay = SDL_GameControllerGetAxis(c, SDL_CONTROLLER_AXIS_LEFTY);
+			if (ay < -20000) dir = UK_UP;
+			else if (ay > 20000) dir = UK_DOWN;
+			else if (ax < -20000) dir = UK_LEFT;
+			else if (ax > 20000) dir = UK_RIGHT;
+		}
+		u32 now = SDL_GetTicks();
+		if (dir < 0) m_stick_dir = -1;
+		else if (dir != m_stick_dir) { m_stick_dir = dir; m_stick_next = now + 380; ui_key(dir); }
+		else if (now >= m_stick_next) { m_stick_next = now + 110; ui_key(dir); }
 	}
-
-	canvas cv(400, 300, menu_width());
-	draw_background(cv);
-	std::string head = tr("JUEGO EN RED", "ONLINE GAME");
-	cv.text(cv.w / 2 - cv.text_w(head, 2) / 2, 12, head, 0xffe01818, 2);
-	cv.text(16, 36, g.title, 0xfff0e0c8, 1, false);
-	std::string join = tr("Unirse a: ", "Join: ");
-	std::string ip = m_editing ? m_edit + ((SDL_GetTicks() / 400) % 2 ? "_" : " ") : (m_cfg.net_host.empty() ? tr("(escribe la IP)", "(type the IP)") : m_cfg.net_host);
-	size_t room = size_t((cv.w - 24) / 8) - join.size();
-	if (ip.size() > room) ip = ip.substr(ip.size() - room);       // keep the end (the cursor) visible
-	const std::string opts[nopt] = {
-		tr("Crear partida (anfitrion, J1)", "Host a game (host, P1)"),
-		join + ip,
-		tr("Puerto UDP: < ", "UDP port: < ") + std::to_string(m_cfg.net_port) + " >",
-		tr("Retardo de entrada: < ", "Input delay: < ") + std::to_string(m_cfg.net_delay) + " frames >",
-		tr("Volver", "Back"),
-	};
-	for (int i = 0; i < nopt; i++)
-	{
-		int y = 56 + i * 20;
-		if (i == m_net_sel) cv.blend(12, y - 4, cv.w - 24, 16, 0xffb00010, 150);
-		cv.text(20, y, opts[i], i == m_net_sel ? 0xffffffff : 0xffe0d0c0);
-	}
-	int y = 162;
-	y = cv.text_wrap(12, y, tr("El anfitrion elige el juego (el seleccionado en el menu) y debe abrir el puerto UDP en su router, "
-	                           "o usar una red virtual (Tailscale, ZeroTier, Radmin VPN...). Todos necesitan las mismas ROMs. "
-	                           "Retardo 3-4 en LAN, 5-7 por internet; lo decide el anfitrion.",
-	                           "The host picks the game (the one selected in the menu) and must open the UDP port on the router, "
-	                           "or use a virtual LAN (Tailscale, ZeroTier, Radmin VPN...). Everybody needs the same ROMs. "
-	                           "Delay 3-4 on a LAN, 5-7 over the internet; the host decides."), 0xffa0a0a0);
-	std::string ips;
-	for (auto &s : m_local_ips) ips += (ips.empty() ? "" : ", ") + s;
-	y = cv.text_wrap(12, y + 3, tr("Tu IP local: ", "Your local IP: ") + (ips.empty() ? std::string("?") : ips), 0xff80ff80);
-	cv.text_wrap(12, y + 3, m_editing ? tr("Escribe la IP y pulsa Enter (Ctrl+V pega)", "Type the IP and press Enter (Ctrl+V pastes)")
-	                                  : tr("Enter: elegir  Izq/Der: cambiar  Esc: volver", "Enter: select  Left/Right: change  Esc: back"), 0xffb09888);
-	if (!m_message.empty() && SDL_GetTicks() < m_message_until) menu_message(cv, m_message);
-	present(cv.px.data(), cv.pw, cv.h, false);
-	SDL_Delay(16);
 }
 
-void app::net_lobby_frame()
+cabinet_inputs app::gather_inputs()
+{
+	cabinet_inputs in{};
+	if (m_menu_open) return in;          // the menu has the controls
+	const Uint8 *ks = SDL_GetKeyboardState(nullptr);
+	for (int p = 0; p < 4; p++)
+	{
+		bool v[ACT_COUNT] = {};
+		for (int a = 0; a < ACT_COUNT; a++) v[a] = m_cfg.keys[p][a] != SDL_SCANCODE_UNKNOWN && ks[m_cfg.keys[p][a]];
+		if (size_t(p) < m_pads.size())
+		{
+			SDL_GameController *c = m_pads[size_t(p)];
+			for (int a = 0; a < ACT_COUNT; a++) v[a] = v[a] || pad_input_down(c, m_cfg.pad[a][0]) || pad_input_down(c, m_cfg.pad[a][1]);
+			int ax = SDL_GameControllerGetAxis(c, SDL_CONTROLLER_AXIS_LEFTX), ay = SDL_GameControllerGetAxis(c, SDL_CONTROLLER_AXIS_LEFTY);
+			v[ACT_UP] |= ay < -12000; v[ACT_DOWN] |= ay > 12000; v[ACT_LEFT] |= ax < -12000; v[ACT_RIGHT] |= ax > 12000;
+			// the menu shortcut is not a coin + start
+			if (m_cfg.hk_menu == HKM_BACK_START && SDL_GameControllerGetButton(c, SDL_CONTROLLER_BUTTON_BACK) && SDL_GameControllerGetButton(c, SDL_CONTROLLER_BUTTON_START))
+				v[ACT_START] = v[ACT_COIN] = false;
+		}
+		auto &q = in.p[p];
+		q.up = v[ACT_UP]; q.down = v[ACT_DOWN]; q.left = v[ACT_LEFT]; q.right = v[ACT_RIGHT];
+		q.hp = v[ACT_HP]; q.bl = v[ACT_BL]; q.hk = v[ACT_HK]; q.lp = v[ACT_LP]; q.lk = v[ACT_LK]; q.b6 = v[ACT_B6];
+		q.start = v[ACT_START]; q.coin = v[ACT_COIN];
+	}
+	in.test = m_test;
+	in.service = ks[SDL_SCANCODE_9] != 0;
+	return in;
+}
+
+// ---------------------------------------------------------------------------
+// games
+// ---------------------------------------------------------------------------
+bool app::start_game(int index, bool net_client)
+{
+	const game_info &g = game_list()[size_t(index)];
+	std::string err;
+	SDL_SetWindowTitle(m_win, (std::string(tr("Mortal Kombat Recomp - cargando ", "Mortal Kombat Recomp - loading ")) + g.title + "...").c_str());
+	m_mach = m_cat->create(g, err);
+	if (!m_mach)
+	{
+		message("Error: " + err, 5000);
+		SDL_SetWindowTitle(m_win, "Mortal Kombat Recomp");
+		return false;
+	}
+	m_version = m_cat->version_label(g);
+	if (!net_client)
+	{
+		std::vector<u8> nv;
+		if (read_whole_file(nv_path(g), nv)) m_mach->set_nvram(nv);
+		m_mach->set_dips(m_cfg.dips);
+	}
+	m_mach->reset();
+	attach_recomp(g);
+	m_cur_game = index;
+	m_test = false;
+	m_menu_open = false;
+	m_screen = screen::game;
+	m_next_frame = 0;
+	SDL_SetWindowTitle(m_win, (std::string("Mortal Kombat Recomp - ") + g.title + (m_net_game ? tr("   [EN RED]", "   [ONLINE]") : "")).c_str());
+	if (m_audio) SDL_ClearQueuedAudio(m_audio);
+	if (!m_net_game)
+		message(m_pads.empty() ? tr("Esc: menu (controles, video, trucos)", "Esc: menu (controls, video, cheats)")
+		                       : tr("Esc o Back+Start: menu (controles, video, trucos)", "Esc or Back+Start: menu (controls, video, cheats)"), 3500);
+	return true;
+}
+
+void app::stop_game()
+{
+	// a netplay client never overwrites its own NVRAM with the host's
+	bool save = !(m_net_game && m_net.role() == netplay::mode::client);
+	if (m_mach && m_cur_game >= 0 && save)
+		write_whole_file(nv_path(game_list()[size_t(m_cur_game)]), m_mach->nvram());
+	if (m_mach && m_cur_game >= 0) save_recomp_misses(game_list()[size_t(m_cur_game)]);
+	m_mach.reset();
+	m_cur_game = -1;
+	m_menu_open = false;
+	if (m_net_game)
+	{
+		std::string err = m_net.error();
+		m_net.stop();
+		m_net_game = false;
+		if (!err.empty()) message(tr("Red: ", "Network: ") + err, 6000);
+	}
+	m_screen = screen::launcher;
+	if (m_audio) SDL_ClearQueuedAudio(m_audio);
+	SDL_SetWindowTitle(m_win, "Mortal Kombat Recomp");
+	save_config(m_cfgpath, m_cfg);
+}
+
+// netplay lobby: the host starts the game, the client follows
+void app::net_lobby_step()
 {
 	m_net.poll();
-	if (!m_net.active())
-	{
-		message(tr("Red: ", "Network: ") + m_net.error(), 6000);
-		m_screen = screen::net_menu;
-		return;
-	}
-	if (m_menu_back) { m_net.stop(); m_screen = screen::net_menu; return; }
-	const game_info &g = game_list()[size_t(m_sel)];
+	if (!m_net.active()) return;
 	bool host = m_net.role() == netplay::mode::host;
-
-	if (host && m_menu_ok)
+	if (host || !m_net.start_received()) return;
+	int idx = -1;
+	for (size_t i = 0; i < game_list().size(); i++) if (m_net.start_game_id() == game_list()[i].id) idx = int(i);
+	std::string why;
+	if (idx < 0) why = tr("juego desconocido: ", "unknown game: ") + m_net.start_game_id();
+	else if (!m_avail[size_t(idx)]) why = std::string(tr("no tienes ", "you don't have ")) + game_list()[size_t(idx)].title;
+	if (why.empty())
 	{
 		m_net_game = true;
-		if (!start_game(m_sel)) { m_net_game = false; m_net.stop(); m_screen = screen::net_menu; return; }
-		m_net.host_start(g.id, m_mach->fingerprint(), m_cfg.dips, m_mach->nvram(), m_cfg.net_delay);
-		message(tr("Partida en red: ", "Online game: ") + std::to_string(m_net.players()) + tr(" jugadores", " players"), 3000);
+		if (!start_game(idx, true)) why = tr("no se pudo cargar el juego", "the game could not be loaded");
+		else if (m_mach->fingerprint() != m_net.start_fingerprint()) why = tr("tus ROMs no coinciden con las del anfitrion", "your ROMs are not the same as the host's");
+	}
+	if (!why.empty())
+	{
+		m_net.client_ready(false, why);
+		m_net.poll();
+		m_mach.reset();
+		m_net_game = false;
+		m_net.stop(why.c_str());
+		message(tr("Red: ", "Network: ") + why, 6000);
+		m_screen = screen::net;
 		return;
 	}
-	if (!host && m_net.start_received())
-	{
-		int idx = -1;
-		for (size_t i = 0; i < game_list().size(); i++) if (m_net.start_game_id() == game_list()[i].id) idx = int(i);
-		std::string why;
-		if (idx < 0) why = tr("juego desconocido: ", "unknown game: ") + m_net.start_game_id();
-		else if (!m_avail[size_t(idx)]) why = std::string(tr("no tienes ", "you don't have ")) + game_list()[size_t(idx)].title;
-		if (why.empty())
-		{
-			m_net_game = true;
-			if (!start_game(idx, true)) why = tr("no se pudo cargar el juego", "the game could not be loaded");
-			else if (m_mach->fingerprint() != m_net.start_fingerprint()) why = tr("tus ROMs no coinciden con las del anfitrion", "your ROMs are not the same as the host's");
-		}
-		if (!why.empty())
-		{
-			m_net.client_ready(false, why);
-			m_net.poll();
-			m_mach.reset();
-			m_net_game = false;
-			m_net.stop(why.c_str());
-			message(tr("Red: ", "Network: ") + why, 6000);
-			m_screen = screen::net_menu;
-			return;
-		}
-		m_mach->set_nvram(m_net.start_nvram());
-		m_mach->set_dips(m_net.start_dips());
-		m_mach->reset();
-		m_net.client_ready(true, "");
-		return;
-	}
-
-	canvas cv(400, 300, menu_width());
-	draw_background(cv);
-	std::string head = tr("JUEGO EN RED", "ONLINE GAME");
-	cv.text(cv.w / 2 - cv.text_w(head, 2) / 2, 12, head, 0xffe01818, 2);
-	int y = 40;
-	auto line = [&](const std::string &s, u32 c = 0xffffffff) { y = cv.text_wrap(16, y, s, c, 12, true); };
-	if (host)
-	{
-		line(std::string(tr("Anfitrion: ", "Host: ")) + g.title, 0xfff0e0c8);
-		std::string ips;
-		for (auto &s : m_local_ips) ips += (ips.empty() ? "" : ", ") + s;
-		line("IP: " + ips, 0xff80ff80);
-		line(tr("Puerto UDP: ", "UDP port: ") + std::to_string(m_cfg.net_port) + tr("   retardo: ", "   delay: ") + std::to_string(m_cfg.net_delay), 0xff80ff80);
-		y += 6;
-		line(tr("Jugadores: ", "Players: ") + std::to_string(m_net.players()) + " / 4");
-		line(tr("J1  tu (anfitrion)", "P1  you (host)"), 0xffe0d0c0);
-		for (auto &p : m_net.peer_list()) line(p, 0xffe0d0c0);
-		y = 240;
-		line(tr("Enter: empezar     Esc: cancelar", "Enter: start     Esc: cancel"), 0xffb09888);
-		line(tr("(puedes empezar solo para probar)", "(you can start alone to try it)"), 0xff808080);
-	}
-	else
-	{
-		line(tr("Conectando con ", "Connecting to ") + m_cfg.net_host + ":" + std::to_string(m_cfg.net_port), 0xfff0e0c8);
-		y += 6;
-		if (m_net.local_slot() < 0) line(tr("Esperando respuesta", "Waiting for an answer") + std::string((SDL_GetTicks() / 400) % 4, '.'));
-		else
-		{
-			line(tr("Conectado como jugador ", "Connected as player ") + std::to_string(m_net.local_slot() + 1) + "  (" + std::to_string(m_net.ping_ms()) + " ms)", 0xff80ff80);
-			line(tr("Jugadores: ", "Players: ") + std::to_string(m_net.players()));
-			line(m_net.stage() == netplay::phase::transfer ? tr("Recibiendo datos de la partida...", "Receiving the game data...")
-			                                               : tr("Esperando a que el anfitrion empiece...", "Waiting for the host to start..."));
-		}
-		y = 240;
-		line(tr("Usas los controles de J1 / primer mando", "You use the P1 keys / first pad"), 0xffb09888);
-		line(tr("Esc: cancelar", "Esc: cancel"), 0xffb09888);
-	}
-	if (!m_message.empty() && SDL_GetTicks() < m_message_until) menu_message(cv, m_message);
-	present(cv.px.data(), cv.pw, cv.h, false);
-	SDL_Delay(10);
+	m_mach->set_nvram(m_net.start_nvram());
+	m_mach->set_dips(m_net.start_dips());
+	m_mach->reset();
+	m_net.client_ready(true, "");
 }
 
-bool app::game_frame()
+// runs one emulated frame when it is due; true when it ran
+bool app::game_step()
 {
-	if (m_menu_back) { stop_game(); return false; }
 	bool ran = false;
 	if (m_net_game)
 	{
@@ -1049,9 +722,11 @@ bool app::game_frame()
 			ran = true;
 		}
 	}
-	else if (!m_paused)
+	else if (!m_menu_open)
 	{
 		m_mach->set_inputs(gather_inputs());
+		for (auto *c : current_cheats())
+			if (c->kind == cheat_kind::hold && cheat_on(*c)) cheat_hold(*m_mach, *c);
 		m_mach->run_frame();
 		ran = true;
 	}
@@ -1067,13 +742,69 @@ bool app::game_frame()
 				SDL_QueueAudio(m_audio, m_abuf.data(), Uint32(m_abuf.size() * sizeof(float)));
 		}
 	}
-	int w = m_mach->width(), h = m_mach->height();
-	canvas cv(w, h);
-	std::memcpy(cv.px.data(), m_mach->frame(), size_t(w) * h * 4);
-	if (m_shot) save_screenshot(cv.px.data(), w, h);      // the game picture, without the overlay
-	draw_overlay(cv);
-	present(cv.px.data(), w, h, true);
 	return ran;
+}
+
+// ---------------------------------------------------------------------------
+// main loop
+// ---------------------------------------------------------------------------
+void app::frame()
+{
+	poll_events();
+	// MK_UI_SCRIPT: automated menu walk for tests, e.g. "size1280x800,wait30,shot,down,ok,wait90,shot,quit"
+	if (static const char *script = getenv("MK_UI_SCRIPT"); script)
+	{
+		static std::vector<std::string> steps;
+		static size_t pos = 0;
+		static int wait = 0;
+		if (steps.empty()) { std::stringstream ss(script); std::string t; while (std::getline(ss, t, ',')) steps.push_back(t); }
+		if (wait > 0) wait--;
+		else if (pos < steps.size())
+		{
+			std::string st = steps[pos++];
+			static const std::map<std::string, int> keys = { { "up", UK_UP }, { "down", UK_DOWN }, { "left", UK_LEFT }, { "right", UK_RIGHT },
+			                                                 { "ok", UK_OK }, { "back", UK_BACK }, { "prev", UK_PREV }, { "next", UK_NEXT }, { "net", UK_NET } };
+			if (keys.count(st)) ui_key(keys.at(st));
+			else if (st.rfind("wait", 0) == 0) wait = atoi(st.c_str() + 4);
+			else if (st == "shot") m_shot = true;
+			else if (st == "menu") open_pause_menu();
+			else if (st == "quit") m_quit = true;
+			else if (st.rfind("size", 0) == 0) { int w = atoi(st.c_str() + 4), h = atoi(st.c_str() + st.find('x') + 1); SDL_SetWindowSize(m_win, w, h); }
+		}
+	}
+	if (m_quit) return;
+	double now = double(SDL_GetPerformanceCounter()) / double(SDL_GetPerformanceFrequency());
+	bool show_ui = m_screen != screen::game || m_menu_open || (!m_message.empty() && SDL_GetTicks() < m_message_until) || m_net_game;
+	if (m_screen == screen::net && m_net.active()) net_lobby_step();
+	if (m_screen == screen::game && m_mach)
+	{
+		bool ran = game_step();
+		if (m_screen != screen::game || !m_mach) return;
+		if (m_net_game && !ran)
+		{
+			std::this_thread::sleep_for(std::chrono::milliseconds(1));
+			return;
+		}
+		if (ran || m_menu_open)
+		{
+			const ui_canvas *ui = nullptr;
+			if (show_ui) { ui_draw(m_ui); ui = &m_ui; }
+			present(m_mach->frame(), m_mach->width(), m_mach->height(), ui);
+		}
+		// pace to the game's own refresh rate (~54.7 Hz on these boards); menus at ~60 Hz
+		double hz = m_menu_open && !m_net_game ? 60.0 : m_mach->refresh_hz();
+		if (hz < 30 || hz > 120) hz = 60;
+		if (m_next_frame <= 0) m_next_frame = now;
+		m_next_frame += 1.0 / hz;
+		double wait = m_next_frame - double(SDL_GetPerformanceCounter()) / double(SDL_GetPerformanceFrequency());
+		bool behind = m_net_game && m_net.buffered() > m_net.delay() + 1;
+		if (wait > 0 && !behind) std::this_thread::sleep_for(std::chrono::duration<double>(wait));
+		else if (wait < -0.1) m_next_frame = now;
+		return;
+	}
+	ui_draw(m_ui);
+	present(nullptr, 0, 0, &m_ui);
+	SDL_Delay(m_screen == screen::net ? 10 : 15);
 }
 
 int app::run()
@@ -1094,18 +825,7 @@ int app::run()
 	SDL_free(bp);
 	m_cfgpath = path_join(m_base, "mk_recomp.ini");
 	load_config(m_cfgpath, m_cfg);
-	if (m_cfg.lang < 0)
-	{
-		// first run: follow the system language (Spanish -> castellano, anything else -> English)
-		g_lang_en = true;
-		if (SDL_Locale *loc = SDL_GetPreferredLocales())
-		{
-			if (loc[0].language && std::string(loc[0].language) == "es") g_lang_en = false;
-			SDL_free(loc);
-		}
-	}
-	else g_lang_en = m_cfg.lang == 1;
-	m_cat = std::make_unique<game_catalog>(m_base);
+	set_language(m_cfg.lang);
 
 	open_window();
 	SDL_StopTextInput();
@@ -1125,44 +845,15 @@ int app::run()
 	for (size_t i = 0; i < game_list().size(); i++)
 		if (m_start_game == game_list()[i].id && m_avail[i]) { m_sel = int(i); start_game(int(i)); }
 
-	using clock = std::chrono::steady_clock;
-	auto next = clock::now();
-	while (!m_quit)
-	{
-		poll_events();
-		if (m_quit) break;
-		switch (m_screen)
-		{
-			case screen::menu: menu_frame(); next = clock::now(); continue;
-			case screen::net_menu: net_menu_frame(); next = clock::now(); continue;
-			case screen::net_lobby: net_lobby_frame(); next = clock::now(); continue;
-			case screen::about: about_frame(); next = clock::now(); continue;
-			case screen::game: break;
-		}
-		bool ran = game_frame();
-		if (m_screen != screen::game) continue;
-		if (m_net_game && !ran)
-		{
-			// waiting for the network: don't advance the clock, poll again shortly
-			std::this_thread::sleep_for(std::chrono::milliseconds(1));
-			continue;
-		}
-		// pace to the game's own refresh rate (~54.7 Hz on these boards)
-		double hz = m_mach->refresh_hz();
-		if (hz < 30 || hz > 120) hz = 60;
-		next += std::chrono::nanoseconds(static_cast<long long>(1e9 / hz));
-		auto now = clock::now();
-		// netplay: if frames are piling up (we are behind the others), skip the wait
-		bool behind = m_net_game && m_net.buffered() > m_net.delay() + 1;
-		if (next > now && !behind) std::this_thread::sleep_for(next - now);
-		else if (now - next > std::chrono::milliseconds(100)) next = now;
-	}
+	while (!m_quit) frame();
+
 	if (m_screen == screen::game) stop_game();
 	m_net.stop();
 	save_config(m_cfgpath, m_cfg);
 	for (auto *c : m_pads) SDL_GameControllerClose(c);
 	if (m_audio) SDL_CloseAudioDevice(m_audio);
 	if (m_tex) SDL_DestroyTexture(m_tex);
+	if (m_uitex) SDL_DestroyTexture(m_uitex);
 	m_gl.shutdown();
 	if (m_ren) SDL_DestroyRenderer(m_ren);
 	SDL_DestroyWindow(m_win);

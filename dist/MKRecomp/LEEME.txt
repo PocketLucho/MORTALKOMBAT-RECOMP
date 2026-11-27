@@ -33,15 +33,16 @@ Si a un juego le falta algo sale en gris; al seleccionarlo, un mensaje dice
 que copiar.
 
 
-RECOMPILACION ESTATICA (opcional)
----------------------------------
-  Con tools/build_recomp.sh del repositorio (misma version que este paquete)
-  el programa TMS34010 de cada juego se recompila a C++ desde TUS ROMs y se
-  compila en recomp/<juego>.dll (Windows, desde WSL) o recomp/<juego>.so
-  (Linux). El menu marca con REC los juegos que lo tienen. El resultado es
-  identico al interprete; lo que falte se anota en recomp/<juego>.miss y se
-  incluye al volver a generarlo. No compartas esos ficheros. Instrucciones:
-  https://github.com/PocketLucho/MORTALKOMBAT-RECOMP
+RECOMPILACION ESTATICA (opcional, recomendada)
+----------------------------------------------
+  Convierte el programa TMS34010 de cada juego en codigo C++ nativo a partir de
+  TUS ROMs. No hay que instalar nada:
+    Windows:          doble clic en RECOMPILAR_RECOMPILE.bat
+    Linux / SteamOS:  doble clic en "Recompilar - Recompile" o ./build_recomp.sh
+  La primera vez, si no hay compilador (Windows, SteamOS), descarga Zig en
+  tools\zig (~45-75 MB). Genera recomp\<juego>.dll / .so; el lanzador marca
+  esos juegos con REC. Juega un rato y vuelve a ejecutarlo: se anade el codigo
+  que falto (recomp\*.miss). No compartas esos ficheros: salen de tus ROMs.
   Steam: la opcion de lanzamiento  --game mk  (o mk2, mk3, umk3) abre ese
   juego directamente.
 
@@ -65,20 +66,27 @@ LINUX Y STEAMOS (Steam Deck, Legion Go S...)
   Si algo falla, mira el fichero mk_recomp.log junto al programa.
 
 
-CONTROLES
----------
+CONTROLES Y MENU
+----------------
 Fila de arriba: punetazo alto / bloqueo / patada alta
 Fila de abajo:  punetazo bajo / bloqueo 2 (MK, MK II) o correr (MK3) / patada baja
 
   J1: flechas, A S D (arriba), Z X C (abajo), start 1, moneda 5
   J2: I J K L, R T Y (arriba), F G H (abajo), start 2, moneda 6
   Mando: Y punetazo alto, X punetazo bajo, B patada alta, A patada baja,
-         RB/RT bloqueo, LB/LT bloqueo 2 / correr, Start, Back = moneda,
-         Back + Start = volver al menu de juegos
+         RB/RT bloqueo, LB/LT bloqueo 2 / correr, Start, Back = moneda
 
-  Esc menu  P pausa  F1 ayuda  F2 TEST  F3 reset  F4 video  F7 aspecto
+  Durante la partida, Esc o Back + Start abren el MENU: continuar, reiniciar,
+  TRUCOS (energia infinita; desbloquear Smoke en MK3 y Mileena, Ermac y
+  Sub-Zero clasico en UMK3...), VIDEO (filtros CRT / scanlines, forma de la
+  imagen, volumen), CONTROLES (cambia cada tecla y cada boton del mando, y
+  los atajos), MAQUINA (sangre, violencia, juego libre...) y SISTEMA (idioma,
+  carpeta de ROMs extra).
+  R3 (clic del stick derecho) cambia el filtro de imagen jugando; en Steam
+  Deck puedes asignar L4/R4 a R3 en Steam Input.
+
+  F2 TEST  F3 reset  F4 filtro  F5 escalado entero  F7 aspecto
   F11 pantalla completa  F12 captura  -/+ volumen  9 credito de servicio
 
-Las teclas y las opciones de la recreativa (juego libre, pais, sangre,
-violencia, golpes bajos, sonido en demo) se cambian en mk_recomp.ini.
-Las puntuaciones y ajustes de cada juego se guardan en saves\.
+Todo se guarda junto al programa (mk_recomp.ini, saves\): se puede llevar en
+un USB. Las puntuaciones y ajustes de cada juego se guardan en saves\.

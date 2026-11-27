@@ -34,7 +34,9 @@ desde la fuente" como en algunos juegos de NBA JAM. En su lugar, `tools/build_re
    `goto` nativos; las instrucciones de registros usan los mismos macros del interprete con
    el codigo de operacion como constante; el resto llama directamente a su manejador ya
    decodificado.
-2. Ese C++ se compila como modulo: `recomp/<juego>.dll` (Windows, con MinGW) o `.so` (Linux).
+2. Ese C++ se compila como modulo: `recomp/<juego>.dll` (Windows) o `.so` (Linux / SteamOS). El
+   modulo solo usa una interfaz C (punteros al estado de la CPU), asi que vale cualquier
+   compilador: el del sistema o Zig, que el script descarga solo si no hay ninguno.
 3. Al arrancar el juego, la aplicacion carga el modulo (comprueba que es de esas ROMs y de la
    misma version del programa) y el menu lo marca con **REC**. Lo que no este recompilado
    (codigo en RAM, direcciones no encontradas) lo ejecuta el interprete y queda anotado en
@@ -46,16 +48,17 @@ del interprete, asi que el resultado es **identico instruccion a instruccion**: 
 el interprete, y tras una pasada de realimentacion el 100 % del codigo ejecutado corre desde
 el modulo (MK: ~27.700 instrucciones recompiladas, MK II ~34.400, MK3 ~43.800, UMK3 ~49.100).
 
-```sh
-git clone https://github.com/PocketLucho/MORTALKOMBAT-RECOMP   # misma version que tu MKRecomp
-cd MORTALKOMBAT-RECOMP
-tools/build_recomp.sh /ruta/a/MKRecomp              # Linux / SteamOS -> recomp/*.so
-tools/build_recomp.sh /ruta/a/MKRecomp --windows    # WSL -> recomp/*.dll (g++-mingw-w64-x86-64-posix)
-```
+**La herramienta viene en la release**, lista para usar y sin instalar nada:
 
-Juega un rato y vuelve a ejecutarlo para incluir lo que falto. **El C++ generado y los modulos
-salen de ROMs con derechos de autor: no los compartas ni los subas.** En SteamOS (sin
-compilador) genera el `.so` en otro Linux / WSL, o dentro de un contenedor (distrobox).
+* **Windows**: doble clic en `RECOMPILAR_RECOMPILE.bat` (la primera vez descarga Zig, ~75 MB).
+* **Linux / SteamOS**: doble clic en `Recompilar - Recompile.desktop` o `./build_recomp.sh` (usa
+  el compilador del sistema; en SteamOS descarga Zig una vez, ~45 MB, en `tools/zig`).
+
+Genera `recomp/<juego>.dll|.so` para cada juego cuyas ROMs esten en `roms/` y borra despues el
+C++ generado. Juega un rato y vuelve a ejecutarlo para incluir lo que falto. **Los modulos salen
+de ROMs con derechos de autor: no los compartas ni los subas.**
+
+Desde el codigo fuente: `tools/build_recomp.sh <carpeta de MKRecomp> [--windows]`.
 
 ## No incluye datos de los juegos
 
@@ -67,10 +70,43 @@ La aplicacion recorre `roms/` (subcarpetas y ZIP incluidos), reconoce cada fiche
 CRC32 (da igual el nombre) y monta lo que necesita cada juego al arrancarlo. Si falta algo,
 el juego sale en gris en el menu y al elegirlo se indica que copiar.
 
+## Menu
+
+Estilo [Planet Harriers](https://github.com/PocketLucho/Planet-Harriers---Recompilation), en rojo
+sangre: **lanzador** (los cuatro juegos, juego en red, ajustes, acerca de, salir, y una tarjeta de
+estado) y **menu de pausa** durante la partida (Esc, F1 o el atajo del mando) con pestanas:
+
+* **Partida**: continuar, reiniciar, interruptor TEST, captura, volver al lanzador, salir.
+* **Trucos**: ver abajo.
+* **Video**: filtro (nitido, suavizado, scanlines, CRT, CRT curvo), intensidad de scanlines, forma
+  de la imagen (4:3, 16:9, 16:10, llenar), escalado entero, pantalla completa, volumen.
+* **Controles**: reasignar cada accion con una tecla (por jugador) y un boton del mando (comun a
+  todos los mandos, con gatillos LT/RT); atajos del mando para el **menu** (Back+Start, Guide o
+  L3+R3) y para **cambiar de filtro** jugando (R3, L3, Back+RB o Back+LB). En Steam Deck puedes
+  asignar L4/R4 a L3/R3 en Steam Input.
+* **Maquina**: interruptores DIP (juego libre, sangre, violencia, golpes bajos, sonido en demo, pais).
+* **Sistema**: idioma, carpeta de ROMs extra, volver a buscar ROMs, juegos recompilados, acerca de.
+
+Los menus se dibujan a la resolucion de la ventana y se adaptan de 4:3 a 21:9.
+
+## Trucos
+
+Probados en el emulador con las ROMs (direcciones de la base de trucos de MAME, por revision):
+
+| Juego | Trucos |
+|---|---|
+| MK (rev 5.0 / 4.0) | energia infinita J1 / J2, ir al fondo del Foso |
+| MK II (L3.1) | energia infinita J1 / J2, siguiente rival Smoke, combate antes de "?" (Jade), el ganador lucha contra Noob Saibot |
+| MK3 (1.0, 2.0, 2.1) | **desbloquear Smoke**, energia y correr infinitos J1 / J2 |
+| UMK3 (1.2, 1.1) | **desbloquear Mileena, Ermac y Sub-Zero clasico**, energia y correr infinitos J1 / J2 |
+
+Los desbloqueos se guardan en la CMOS de la placa con su suma de verificacion corregida (no se
+pierden los demas ajustes) y reinician la placa. No estan disponibles en partidas en red.
+
 ## Controles
 
-Panel arcade de MK: fila de arriba **puñetazo alto / bloqueo / patada alta**, fila de abajo
-**puñetazo bajo / bloqueo 2 (MK, MK II) o correr (MK3, UMK3) / patada baja**.
+Panel arcade de MK: fila de arriba **punetazo alto / bloqueo / patada alta**, fila de abajo
+**punetazo bajo / bloqueo 2 (MK, MK II) o correr (MK3, UMK3) / patada baja**. Por defecto:
 
 | | Direccion | PA | BL | PtA | PB | BL2/Correr | PtB | Start | Moneda |
 |---|---|---|---|---|---|---|---|---|---|
@@ -78,12 +114,11 @@ Panel arcade de MK: fila de arriba **puñetazo alto / bloqueo / patada alta**, f
 | J2 | I J K L | R | T | Y | F | G | H | 2 | 6 |
 | Mando | cruceta / stick | Y | RB / RT | B | X | LB / LT | A | Start | Back |
 
-Mando Back + Start: volver al menu de juegos (Steam usa el boton Guia). En Linux / SteamOS no hay
-que instalar nada; `dist/MKRecomp/LEEME.txt` explica como anadirlo a Steam.
-Esc menu, P pausa, F1 ayuda, F2 interruptor TEST, F3 reset, F4 shader, F5 escalado entero,
-F7 aspecto, F11 pantalla completa, F12 captura, 9 credito de servicio. Las teclas y las
-opciones de la recreativa (juego libre, pais, sangre, violencia, golpes bajos, sonido en
-demo) se cambian en `mk_recomp.ini`.
+Todo se cambia en **Ajustes > Controles** (o en `mk_recomp.ini`). Esc / Back+Start menu,
+F2 interruptor TEST, F3 reset, F4 filtro, F5 escalado entero, F7 aspecto, F11 pantalla completa,
+F12 captura, - / + volumen, 9 credito de servicio. Opcion de lanzamiento `--game mk|mk2|mk3|umk3`
+para abrir un juego directamente (por ejemplo desde Steam). Todo se guarda junto al programa
+(modo portatil: se puede llevar en un USB).
 
 ## Compilar
 
@@ -128,7 +163,8 @@ ejecuta un juego con entradas automaticas y guarda capturas `.ppm` y estadistica
 
 El codigo de este proyecto se publica con licencia BSD de 3 clausulas (ver `LICENSE`).
 Codigo de terceros: nucleos de CPU y logica de las placas basados en MAME (BSD 3 clausulas),
-ymfm (BSD 3 clausulas), miniz (MIT / Unlicense), font8x8 (dominio publico), SDL2 (zlib).
+ymfm (BSD 3 clausulas), miniz (MIT / Unlicense), stb_truetype (dominio publico / MIT), SDL2 (zlib),
+fuentes Nosifer, Metal Mania y Oswald (SIL Open Font License, `src/third_party/fonts`).
 Mortal Kombat es una marca de Warner Bros. Entertainment; Midway es marca de sus propietarios.
 Es un proyecto de aficionados sin animo de lucro y sin relacion con ellos.
 

@@ -10,14 +10,16 @@ public:
 	bool init(SDL_Window *win, std::string &err);   // window must have SDL_WINDOW_OPENGL
 	void shutdown();
 	bool ok() const { return m_ok; }
-	// draws pixels (ARGB8888) into a 4:3 area; integer = vertical scale is a whole number
-	void present(const uint32_t *px, int w, int h, int shader, bool integer, float scan_strength, float aspect);
+	// draws pixels (ARGB8888, may be null) into the output area; integer = vertical scale is a
+	// whole number; then the UI layer (premultiplied ARGB, window size, may be null) on top
+	void present(const uint32_t *px, int w, int h, int shader, bool integer, float scan_strength, float aspect,
+	             const uint32_t *ui = nullptr, int uw = 0, int uh = 0);
 private:
 	bool m_ok = false;
 	SDL_Window *m_win = nullptr;
 	SDL_GLContext m_ctx = nullptr;
-	unsigned m_tex = 0;
-	int m_tw = 0, m_th = 0;
+	unsigned m_tex = 0, m_uitex = 0, m_ui_prog = 0;
+	int m_tw = 0, m_th = 0, m_uw = 0, m_uh = 0;
 	unsigned m_prog[8] = {};
 	int m_nprog = 0;
 };

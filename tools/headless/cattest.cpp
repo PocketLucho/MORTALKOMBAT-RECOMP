@@ -1,5 +1,6 @@
 // cattest.cpp - run a catalogue game headless with a scripted input pattern
 #include "games.h"
+#include "cheats.h"
 #include "recomp/rc_abi.h"
 #include "cpu/tms34010/tms34010.h"
 #include <cstdio>
@@ -57,6 +58,61 @@ int main(int argc, char **argv)
 				printf("CRASH at frame %d, last PCs:\n", f);
 				for (int i = 4000; i > 0; i--) { offs_t p = tr[(c->m_trace_pos - i) & 4095]; if (i < 4000 && p != tr[(c->m_trace_pos - i - 1) & 4095]) printf(" %08x", p); }
 				printf("\n");
+			}
+			// PEEK=a1,a2,...: print those RAM / CMOS words (MAME-2003 cheat byte addresses) every 60 frames
+			// POKE=a=v,...: at frame 2 write those low bytes (MAME-2003 cheat addresses), then reset
+			if (const char *po = getenv("POKE"); po && f == (getenv("POKEF") ? atoi(getenv("POKEF")) : 2))
+			{
+				for (const char *q = po; *q;)
+				{
+					char *e;
+					u32 b = u32(strtoul(q, &e, 16));
+					u16 v = u16(strtoul(e + 1, &e, 16));
+					printf("poke %x=%02x -> %d\n", b, v, m->cheat_write(b * 8, v, 0x00ff));
+					if (*e != ',') break;
+					q = e + 1;
+				}
+				// FIXCK=ck_hi_addr: adjust a ~sum checksum (two bytes, hi then lo) for the bytes poked
+				if (const char *fc = getenv("FIXCK"))
+				{
+					(void)fc;
+				}
+				if (!getenv("NORESET")) m->reset();
+			}
+			if (const char *pk = getenv("PEEK"); pk && f % 60 == 0)
+			{
+				printf("f%d", f);
+				for (const char *q = pk; *q;)
+				{
+					u32 b = u32(strtoul(q, nullptr, 16));
+					u16 v = 0;
+					m->cheat_read(b * 8, v);
+					printf(" %x=%04x", b, v);
+					const char *c = strchr(q, ',');
+					if (!c) break;
+					q = c + 1;
+				}
+				printf("\n");
+			}
+			// CHEAT=id,id...@frame: CMOS cheats are set at that frame (then reset), the others held
+			if (const char *ch = getenv("CHEAT"))
+			{
+				std::string spec = ch;
+				int at = spec.find('@') != std::string::npos ? atoi(spec.c_str() + spec.find('@') + 1) : 2;
+				std::string ids = spec.substr(0, spec.find('@'));
+				for (auto *c : cheats_for(g.id, cat.version_label(g)))
+					if (("," + ids + ",").find("," + std::string(c->id) + ",") != std::string::npos)
+					{
+						if (c->kind == cheat_kind::cmos) { if (f == at) { printf("cmos %s -> %d\n", c->id, cheat_cmos_set(*m, *c, true)); m->reset(); } }
+						else if (c->kind == cheat_kind::hold || f == at) cheat_hold(*m, *c);
+					}
+			}
+			if (const char *dn = getenv("DUMPNV"); dn && f == atoi(dn))
+			{
+				FILE *o = fopen("/tmp/rc/nv.bin", "wb");
+				auto nv = m->nvram();
+				fwrite(nv.data(), 1, nv.size(), o);
+				fclose(o);
 			}
 			if (hashes)
 			{

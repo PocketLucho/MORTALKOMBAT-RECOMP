@@ -347,3 +347,20 @@ std::string tunit_machine::attach_recomp(const rc_module *m)
 	m_maincpu.set_recompiled(m);
 	return {};
 }
+
+bool tunit_machine::cheat_read(u32 a, u16 &v)
+{
+	if (IN_RANGE(a, 0x01000000, 0x013fffff)) { v = m_ram[WOFF(a, 0x01000000)]; return true; }
+	if (IN_RANGE(a, 0x01400000, 0x0141ffff)) { v = m_nvram[WOFF(a, 0x01400000) & 0x1fff]; return true; }
+	return false;
+}
+
+bool tunit_machine::cheat_write(u32 a, u16 data, u16 mask)
+{
+	u16 *r = nullptr;
+	if (IN_RANGE(a, 0x01000000, 0x013fffff)) r = &m_ram[WOFF(a, 0x01000000)];
+	else if (IN_RANGE(a, 0x01400000, 0x0141ffff)) r = &m_nvram[WOFF(a, 0x01400000) & 0x1fff];
+	if (!r) return false;
+	*r = u16((*r & ~mask) | (data & mask));
+	return true;
+}

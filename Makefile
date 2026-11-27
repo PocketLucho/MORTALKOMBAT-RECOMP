@@ -27,13 +27,13 @@ all: $(BUILD)/cattest
 SDL2W ?= /mingw64
 WINCC ?= x86_64-w64-mingw32-gcc
 WINCXX ?= x86_64-w64-mingw32-g++
-APP_SRC = src/app/main.cpp src/app/games.cpp src/app/romload.cpp src/app/netplay.cpp src/app/gl_present.cpp src/third_party/miniz/miniz.c
+APP_SRC = src/app/main.cpp src/app/menu.cpp src/app/ui_draw.cpp src/app/cheats.cpp src/app/games.cpp src/app/romload.cpp src/app/netplay.cpp src/app/gl_present.cpp src/third_party/miniz/miniz.c
 WIN_OUT ?= dist/MKRecomp
 win:
 	@mkdir -p $(WIN_OUT)
 	$(WINCC) -O2 -c src/third_party/miniz/miniz.c -o build/win/miniz.o
 	$(WINCXX) -std=c++20 -O2 -Isrc/emu -Isrc/mame -Isrc/board -Isrc/app -Isrc/third_party/miniz -Isrc -I$(SDL2W)/include/SDL2 \
-	  src/app/main.cpp src/app/games.cpp src/app/romload.cpp src/app/netplay.cpp src/app/gl_present.cpp build/win/miniz.o build/win/libcore.a \
+	  src/app/main.cpp src/app/menu.cpp src/app/ui_draw.cpp src/app/cheats.cpp src/app/games.cpp src/app/romload.cpp src/app/netplay.cpp src/app/gl_present.cpp build/win/miniz.o build/win/libcore.a \
 	  -L$(SDL2W)/lib -lmingw32 -lSDL2main -lSDL2 -mwindows -static -lwinmm -lsetupapi -loleaut32 -lole32 -limm32 -lversion -lgdi32 -luser32 -lshell32 -luuid -ladvapi32 -lcfgmgr32 -lws2_32 -lwinpthread \
 	  -o $(WIN_OUT)/MKRecomp.exe
 
@@ -45,10 +45,10 @@ APP_INC = -Isrc/emu -Isrc/mame -Isrc/board -Isrc/app -Isrc/third_party/miniz -Is
 $(BUILD)/miniz.o: src/third_party/miniz/miniz.c
 	$(CC) -O2 -c $< -o $@
 linux-app: $(BUILD)/libcore.a $(BUILD)/miniz.o
-	$(CXX) $(CXXFLAGS) $(APP_INC) -I$(SDL2L)/include/SDL2 src/app/main.cpp src/app/games.cpp src/app/romload.cpp src/app/netplay.cpp src/app/gl_present.cpp \
+	$(CXX) $(CXXFLAGS) $(APP_INC) -I$(SDL2L)/include/SDL2 src/app/main.cpp src/app/menu.cpp src/app/ui_draw.cpp src/app/cheats.cpp src/app/games.cpp src/app/romload.cpp src/app/netplay.cpp src/app/gl_present.cpp \
 	  $(BUILD)/miniz.o $(BUILD)/libcore.a -L$(SDL2L)/lib $(LINUX_SDL) -static-libstdc++ -static-libgcc -lm -ldl -lpthread -o $(BUILD)/MKRecomp
 $(BUILD)/cattest: tools/headless/cattest.cpp src/app/games.cpp src/app/romload.cpp $(BUILD)/libcore.a $(BUILD)/miniz.o
-	$(CXX) $(CXXFLAGS) $(APP_INC) -Isrc $< src/app/games.cpp src/app/romload.cpp $(BUILD)/miniz.o $(BUILD)/libcore.a -ldl -o $@
+	$(CXX) $(CXXFLAGS) $(APP_INC) -Isrc $< src/app/games.cpp src/app/romload.cpp src/app/cheats.cpp $(BUILD)/miniz.o $(BUILD)/libcore.a -ldl -o $@
 .PHONY: win linux-app
 
 # ---------------- static recompiler (tools/recomp) ----------------

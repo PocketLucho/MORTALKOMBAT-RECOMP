@@ -77,13 +77,14 @@ static const gfx_desc umk3_gfx[20] = {
 	{ { "umk-u113.bin", 0x99d74a1e }, 0x1400000 }, { { "umk-u112.bin", 0xb5a46488 }, 0x1400001 }, { { "umk-u111.bin", 0xa87523c8 }, 0x1400002 }, { { "umk-u110.bin", 0x0038f205 }, 0x1400003 } };
 
 // ---------------------------------------------------------------------------
-game_catalog::game_catalog(const std::string &base_dir) : m_base(base_dir) {}
+game_catalog::game_catalog(const std::string &base_dir, const std::string &extra_rom_dir) : m_base(base_dir), m_extra(extra_rom_dir) {}
 
 rom_pool &game_catalog::pool()
 {
 	if (!m_pool_scanned)
 	{
 		m_pool.add_tree(path_join(m_base, "roms"));
+		if (!m_extra.empty()) m_pool.add_tree(m_extra);
 		m_pool_scanned = true;
 	}
 	return m_pool;
@@ -246,4 +247,13 @@ bool game_catalog::program_image(const game_info &g, std::vector<u8> &out, std::
 	if (!v || !load_desc(p, v->lo, lo, err) || !load_desc(p, v->hi, hi, err)) return false;
 	interleave(lo, hi, out);
 	return true;
+}
+
+std::string game_catalog::version_label(const game_info &g)
+{
+	std::string id = g.id;
+	rom_pool &p = pool();
+	const prog_version *v = id == "mk" ? find_version(p, mk_versions) : id == "mk2" ? find_version(p, mk2_versions)
+	                      : id == "mk3" ? find_version(p, mk3_versions) : find_version(p, umk3_versions);
+	return v ? v->label : "";
 }

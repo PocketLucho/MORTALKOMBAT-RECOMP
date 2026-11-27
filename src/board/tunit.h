@@ -64,6 +64,8 @@ public:
 	std::string attach_recomp(const rc_module *m) override;
 	bool recompiled() const override { return m_maincpu.recompiled() != nullptr; }
 	u64 interpreted_instructions() const override { return m_maincpu.rc_interpreted; }
+	bool cheat_read(u32 a, u16 &v) override;
+	bool cheat_write(u32 a, u16 data, u16 mask) override;
 
 private:
 	// mem_bus for the TMS34010 (bit addresses)

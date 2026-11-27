@@ -60,4 +60,7 @@ public:
 	virtual std::string attach_recomp(const struct rc_module *) { return "not supported"; }
 	virtual bool recompiled() const { return false; }
 	virtual u64 interpreted_instructions() const { return 0; }
+	// cheats: 16-bit access to work RAM and CMOS only (bit addresses); false outside them
+	virtual bool cheat_read(u32 bitaddr, u16 &v) { (void)bitaddr; (void)v; return false; }
+	virtual bool cheat_write(u32 bitaddr, u16 data, u16 mask) { (void)bitaddr; (void)data; (void)mask; return false; }
 };

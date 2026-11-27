@@ -33,7 +33,9 @@ each game's TMS34010 program from your own ROMs:
    branches (JRcc, JAcc, DSJ, DSJS) are native conditions and `goto`s; register instructions
    use the interpreter's own macros with the opcode as a constant; the rest call their
    handler directly, already decoded.
-2. That C++ is compiled into a module: `recomp/<game>.dll` (Windows, MinGW) or `.so` (Linux).
+2. That C++ is compiled into a module: `recomp/<game>.dll` (Windows) or `.so` (Linux / SteamOS).
+   The module only uses a C interface (pointers to the CPU state), so any compiler works: the
+   system's, or Zig, which the script downloads only when there is none.
 3. When the game starts the application loads the module (after checking it was built from
    those ROMs and the same program version) and the menu shows **REC**. Anything not
    recompiled (code in RAM, addresses not found) runs in the interpreter and is logged in
@@ -45,16 +47,17 @@ of attract mode and fights) picture and RAM match the interpreter on every frame
 one feedback pass 100% of the executed code runs from the module (MK: ~27,700 recompiled
 instructions, MK II ~34,400, MK3 ~43,800, UMK3 ~49,100).
 
-```sh
-git clone https://github.com/PocketLucho/MORTALKOMBAT-RECOMP   # same version as your MKRecomp
-cd MORTALKOMBAT-RECOMP
-tools/build_recomp.sh /path/to/MKRecomp              # Linux / SteamOS -> recomp/*.so
-tools/build_recomp.sh /path/to/MKRecomp --windows    # WSL -> recomp/*.dll (g++-mingw-w64-x86-64-posix)
-```
+**The tool comes in the release**, ready to use, nothing to install:
 
-Play for a while and run it again to include what was missed. **The generated C++ and the
-modules come from copyrighted ROMs: do not share or upload them.** On SteamOS (no compiler)
-build the `.so` on another Linux / WSL, or in a container (distrobox).
+* **Windows**: double-click `RECOMPILAR_RECOMPILE.bat` (the first time it downloads Zig, ~75 MB).
+* **Linux / SteamOS**: double-click `Recompilar - Recompile.desktop` or run `./build_recomp.sh`
+  (uses the system compiler; on SteamOS it downloads Zig once, ~45 MB, into `tools/zig`).
+
+It builds `recomp/<game>.dll|.so` for every game whose ROMs are in `roms/` and deletes the
+generated C++ afterwards. Play for a while and run it again to include what was missed. **The
+modules come from copyrighted ROMs: do not share or upload them.**
+
+From the source code: `tools/build_recomp.sh <MKRecomp folder> [--windows]`.
 
 ## No game data included
 
@@ -66,10 +69,43 @@ The application scans `roms/` (sub-folders and ZIPs included), identifies each f
 CRC32 (the file name does not matter) and assembles what each game needs when it starts. If
 something is missing the game is greyed out in the menu and selecting it says what to copy.
 
+## Menu
+
+In the style of [Planet Harriers](https://github.com/PocketLucho/Planet-Harriers---Recompilation),
+blood red: a **launcher** (the four games, online game, settings, about, quit, and a status card)
+and a **pause menu** while playing (Esc, F1 or the pad shortcut) with tabs:
+
+* **Game**: resume, reset, TEST switch, screenshot, back to the launcher, quit.
+* **Cheats**: see below.
+* **Video**: filter (sharp, smooth, scanlines, CRT, curved CRT), scanline strength, picture
+  shape (4:3, 16:9, 16:10, fill), integer scaling, fullscreen, volume.
+* **Controls**: remap every action to a key (per player) and a pad button (shared by every
+  pad, LT/RT triggers included); pad shortcuts for the **menu** (Back+Start, Guide or L3+R3)
+  and to **change the filter** while playing (R3, L3, Back+RB or Back+LB). On the Steam Deck
+  you can map L4/R4 to L3/R3 in Steam Input.
+* **Machine**: DIP switches (free play, blood, violence, low blows, attract sound, country).
+* **System**: language, extra ROM folder, search the ROMs again, recompiled games, about.
+
+The menus are drawn at the window's resolution and adapt from 4:3 to 21:9.
+
+## Cheats
+
+Checked in the emulator with the ROMs (addresses from the MAME cheat database, per revision):
+
+| Game | Cheats |
+|---|---|
+| MK (rev 5.0 / 4.0) | infinite energy P1 / P2, go to the bottom of the Pit |
+| MK II (L3.1) | infinite energy P1 / P2, next opponent Smoke, the match before "?" (Jade), the winner fights Noob Saibot |
+| MK3 (1.0, 2.0, 2.1) | **unlock Smoke**, infinite energy and run P1 / P2 |
+| UMK3 (1.2, 1.1) | **unlock Mileena, Ermac and Classic Sub-Zero**, infinite energy and run P1 / P2 |
+
+The unlocks are stored in the board's CMOS with its checksum fixed (the other settings are
+kept) and reset the board. Not available in online games.
+
 ## Controls
 
 MK arcade panel: top row **high punch / block / high kick**, bottom row **low punch /
-block 2 (MK, MK II) or run (MK3, UMK3) / low kick**.
+block 2 (MK, MK II) or run (MK3, UMK3) / low kick**. Defaults:
 
 | | Direction | HP | BL | HK | LP | BL2/Run | LK | Start | Coin |
 |---|---|---|---|---|---|---|---|---|---|
@@ -77,11 +113,10 @@ block 2 (MK, MK II) or run (MK3, UMK3) / low kick**.
 | P2 | I J K L | R | T | Y | F | G | H | 2 | 6 |
 | Pad | d-pad / stick | Y | RB / RT | B | X | LB / LT | A | Start | Back |
 
-Pad Back + Start: back to the game menu (Steam takes the Guide button). On Linux / SteamOS the
-program needs nothing installed; see `dist/MKRecomp/README.txt` for adding it to Steam.
-Esc menu, P pause, F1 help, F2 TEST switch, F3 reset, F4 shader, F5 integer scaling,
-F7 aspect, F11 fullscreen, F12 screenshot, 9 service credit. Keys and the cabinet options
-(free play, country, blood, violence, low blows, attract sound) are set in `mk_recomp.ini`.
+Everything can be changed in **Settings > Controls** (or `mk_recomp.ini`). Esc / Back+Start menu,
+F2 TEST switch, F3 reset, F4 filter, F5 integer scaling, F7 aspect, F11 fullscreen, F12 screenshot,
+- / + volume, 9 service credit. Launch option `--game mk|mk2|mk3|umk3` opens a game directly
+(e.g. from Steam). Everything is stored next to the program (portable: it can live on a USB stick).
 
 ## Building
 
@@ -126,7 +161,8 @@ runs a game with scripted inputs and writes `.ppm` snapshots and sound statistic
 
 This project's code is released under the BSD 3-Clause license (see `LICENSE`).
 Third-party code: CPU cores and board logic based on MAME (BSD 3-Clause), ymfm (BSD 3-Clause),
-miniz (MIT / Unlicense), font8x8 (public domain), SDL2 (zlib).
+miniz (MIT / Unlicense), stb_truetype (public domain / MIT), SDL2 (zlib),
+Nosifer, Metal Mania and Oswald fonts (SIL Open Font License, `src/third_party/fonts`).
 Mortal Kombat is a trademark of Warner Bros. Entertainment; Midway is a trademark of its
 owners. This is a non-profit fan project not affiliated with them.
 

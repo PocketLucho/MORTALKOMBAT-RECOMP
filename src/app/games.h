@@ -25,7 +25,7 @@ const std::vector<game_info> &game_list();
 class game_catalog
 {
 public:
-	explicit game_catalog(const std::string &base_dir);
+	explicit game_catalog(const std::string &base_dir, const std::string &extra_rom_dir = "");
 	// availability check (fast) and a human-readable reason when missing (in the UI language)
 	bool available(const game_info &g, std::string &why);
 	std::unique_ptr<arcade_machine> create(const game_info &g, std::string &err);
@@ -35,8 +35,10 @@ public:
 	std::string base() const { return m_base; }
 	// the main CPU program image (0x100000 bytes, little-endian words) as the board sees it
 	bool program_image(const game_info &g, std::vector<u8> &out, std::string &err);
+	// program revision that create() uses ("5.0", "L3.1", "1.2"...), "" if not available
+	std::string version_label(const game_info &g);
 private:
-	std::string m_base;
+	std::string m_base, m_extra;
 	rom_pool m_pool;
 	bool m_pool_scanned = false;
 	rom_pool &pool();

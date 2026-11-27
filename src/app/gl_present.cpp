@@ -42,6 +42,9 @@ typedef void GLvoid;
 #define GL_UNPACK_ALIGNMENT 0x0CF5
 #define GL_UNPACK_ROW_LENGTH 0x0CF2
 #define GL_TEXTURE0 0x84C0
+#define GL_BLEND 0x0BE2
+#define GL_ONE 1
+#define GL_ONE_MINUS_SRC_ALPHA 0x0303
 
 #define GLFUNCS \
 	F(void, glGenTextures, (GLsizei, GLuint *)) \
@@ -76,7 +79,10 @@ typedef void GLvoid;
 	F(void, glUniform2f, (GLint, GLfloat, GLfloat)) \
 	F(void, glVertexAttribPointer, (GLuint, GLint, GLenum, GLboolean, GLsizei, const GLvoid *)) \
 	F(void, glEnableVertexAttribArray, (GLuint)) \
-	F(void, glActiveTexture, (GLenum))
+	F(void, glActiveTexture, (GLenum)) \
+	F(void, glEnable, (GLenum)) \
+	F(void, glDisable, (GLenum)) \
+	F(void, glBlendFunc, (GLenum, GLenum))
 
 #define F(ret, name, args) typedef ret (APIENTRY *PFN_##name) args; static PFN_##name p_##name;
 GLFUNCS
@@ -177,7 +183,25 @@ bool gl_presenter::init(SDL_Window *win, std::string &err)
 		}
 		m_prog[m_nprog++] = p;
 	}
+	{
+		// UI layer: premultiplied RGBA drawn over the picture
+		static const char *kOverlay = "void main() { gl_FragColor = texture2D(u_tex, v_uv); }\n";
+		std::string e;
+		GLuint v = compile(GL_VERTEX_SHADER, std::string(versions[vi]) + kVertexShader, e);
+		GLuint f = v ? compile(GL_FRAGMENT_SHADER, std::string(versions[vi]) + kFragHeader + kOverlay, e) : 0;
+		if (!v || !f) { err = "overlay shader: " + e; shutdown(); return false; }
+		GLuint p = p_glCreateProgram();
+		p_glAttachShader(p, v);
+		p_glAttachShader(p, f);
+		p_glBindAttribLocation(p, 0, "a_pos");
+		p_glBindAttribLocation(p, 1, "a_uv");
+		p_glLinkProgram(p);
+		p_glDeleteShader(v);
+		p_glDeleteShader(f);
+		m_ui_prog = p;
+	}
 	p_glGenTextures(1, &m_tex);
+	p_glGenTextures(1, &m_uitex);
 	m_ok = true;
 	return true;
 }
@@ -187,64 +211,92 @@ void gl_presenter::shutdown()
 	if (m_ctx)
 	{
 		if (p_glDeleteProgram) for (int i = 0; i < m_nprog; i++) p_glDeleteProgram(m_prog[i]);
+		if (m_ui_prog && p_glDeleteProgram) p_glDeleteProgram(m_ui_prog);
 		if (m_tex && p_glDeleteTextures) p_glDeleteTextures(1, &m_tex);
+		if (m_uitex && p_glDeleteTextures) p_glDeleteTextures(1, &m_uitex);
 		SDL_GL_DeleteContext(m_ctx);
 	}
 	m_ctx = nullptr;
 	m_nprog = 0;
-	m_tex = 0;
-	m_tw = m_th = 0;
+	m_tex = m_uitex = m_ui_prog = 0;
+	m_tw = m_th = m_uw = m_uh = 0;
 	m_ok = false;
 }
 
-void gl_presenter::present(const uint32_t *px, int w, int h, int shader, bool integer, float scan_strength, float aspect)
+static const float kQuad[] = { -1, -1, 0, 1, 1, -1, 1, 1, -1, 1, 0, 0, 1, 1, 1, 0 };
+
+void gl_presenter::present(const uint32_t *px, int w, int h, int shader, bool integer, float scan_strength, float aspect,
+                           const uint32_t *ui, int uw, int uh)
 {
 	if (!m_ok) return;
-	shader = std::clamp(shader, 0, m_nprog - 1);
-	p_glActiveTexture(GL_TEXTURE0);
-	p_glBindTexture(GL_TEXTURE_2D, m_tex);
-	p_glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-	// ARGB8888 -> RGBA bytes (GL_BGRA isn't available on GLES/ANGLE contexts)
-	static std::vector<uint32_t> conv;
-	conv.resize(size_t(w) * h);
-	for (size_t i = 0; i < conv.size(); i++)
-	{
-		uint32_t v = px[i];
-		conv[i] = 0xff000000u | (v & 0x0000ff00u) | ((v >> 16) & 0xffu) | ((v & 0xffu) << 16);
-	}
-	if (w != m_tw || h != m_th)
-	{
-		p_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-		p_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-		p_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-		p_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-		p_glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, conv.data());
-		m_tw = w; m_th = h;
-	}
-	else
-		p_glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, conv.data());
-
 	int ww, wh;
 	SDL_GL_GetDrawableSize(m_win, &ww, &wh);
-	int x, y, dw, dh;
-	output_rect(ww, wh, w, h, integer, aspect, x, y, dw, dh);
 	p_glViewport(0, 0, ww, wh);
 	p_glClearColor(0, 0, 0, 1);
 	p_glClear(GL_COLOR_BUFFER_BIT);
-	p_glViewport(x, wh - y - dh, dw, dh);
-
-	GLuint p = m_prog[shader];
-	p_glUseProgram(p);
-	p_glUniform1i(p_glGetUniformLocation(p, "u_tex"), 0);
-	p_glUniform2f(p_glGetUniformLocation(p, "u_src"), float(w), float(h));
-	p_glUniform2f(p_glGetUniformLocation(p, "u_out"), float(dw), float(dh));
-	float opt = shader == 2 ? scan_strength : shader == 4 ? 1.0f : 0.0f;
-	p_glUniform1f(p_glGetUniformLocation(p, "u_opt"), opt);
-	static const float quad[] = { -1, -1, 0, 1, 1, -1, 1, 1, -1, 1, 0, 0, 1, 1, 1, 0 };
-	p_glVertexAttribPointer(0, 2, GL_FLOAT, 0, 16, quad);
-	p_glVertexAttribPointer(1, 2, GL_FLOAT, 0, 16, quad + 2);
-	p_glEnableVertexAttribArray(0);
-	p_glEnableVertexAttribArray(1);
-	p_glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+	p_glDisable(GL_BLEND);
+	p_glActiveTexture(GL_TEXTURE0);
+	p_glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+	static std::vector<uint32_t> conv;
+	// ARGB8888 -> RGBA bytes (GL_BGRA isn't available on GLES/ANGLE contexts)
+	auto to_rgba = [&](const uint32_t *src, size_t n, bool opaque) {
+		conv.resize(n);
+		uint32_t a = opaque ? 0xff000000u : 0;
+		for (size_t i = 0; i < n; i++)
+		{
+			uint32_t v = src[i];
+			conv[i] = (opaque ? a : (v & 0xff000000u)) | (v & 0x0000ff00u) | ((v >> 16) & 0xffu) | ((v & 0xffu) << 16);
+		}
+	};
+	auto upload = [&](unsigned tex, int &tw, int &th, int w2, int h2) {
+		p_glBindTexture(GL_TEXTURE_2D, tex);
+		if (w2 != tw || h2 != th)
+		{
+			p_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+			p_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+			p_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+			p_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+			p_glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w2, h2, 0, GL_RGBA, GL_UNSIGNED_BYTE, conv.data());
+			tw = w2; th = h2;
+		}
+		else
+			p_glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w2, h2, GL_RGBA, GL_UNSIGNED_BYTE, conv.data());
+	};
+	auto quad = [&]() {
+		p_glVertexAttribPointer(0, 2, GL_FLOAT, 0, 16, kQuad);
+		p_glVertexAttribPointer(1, 2, GL_FLOAT, 0, 16, kQuad + 2);
+		p_glEnableVertexAttribArray(0);
+		p_glEnableVertexAttribArray(1);
+		p_glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+	};
+	if (px)
+	{
+		shader = std::clamp(shader, 0, m_nprog - 1);
+		to_rgba(px, size_t(w) * h, true);
+		upload(m_tex, m_tw, m_th, w, h);
+		int x, y, dw, dh;
+		output_rect(ww, wh, w, h, integer, aspect, x, y, dw, dh);
+		p_glViewport(x, wh - y - dh, dw, dh);
+		GLuint p = m_prog[shader];
+		p_glUseProgram(p);
+		p_glUniform1i(p_glGetUniformLocation(p, "u_tex"), 0);
+		p_glUniform2f(p_glGetUniformLocation(p, "u_src"), float(w), float(h));
+		p_glUniform2f(p_glGetUniformLocation(p, "u_out"), float(dw), float(dh));
+		float opt = shader == 2 ? scan_strength : shader == 4 ? 1.0f : 0.0f;
+		p_glUniform1f(p_glGetUniformLocation(p, "u_opt"), opt);
+		quad();
+	}
+	if (ui)
+	{
+		to_rgba(ui, size_t(uw) * uh, false);
+		upload(m_uitex, m_uw, m_uh, uw, uh);
+		p_glViewport(0, 0, ww, wh);
+		p_glEnable(GL_BLEND);
+		p_glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+		p_glUseProgram(m_ui_prog);
+		p_glUniform1i(p_glGetUniformLocation(m_ui_prog, "u_tex"), 0);
+		quad();
+		p_glDisable(GL_BLEND);
+	}
 	SDL_GL_SwapWindow(m_win);
 }
