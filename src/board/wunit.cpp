@@ -289,7 +289,6 @@ std::string wunit_machine::attach_recomp(const rc_module *m)
 {
 	if (!m) { m_maincpu.set_recompiled(nullptr); return {}; }
 	if (m->abi != RC_ABI_VERSION) return "ABI";
-	if (m->layout != tms34010_device::rc_layout_hash()) return "layout";
 	if (m->rom_hash != rc_fnv64(m_roms.program.data(), m_roms.program.size())) return "ROM";
 	m_maincpu.set_recompiled(m);
 	return {};

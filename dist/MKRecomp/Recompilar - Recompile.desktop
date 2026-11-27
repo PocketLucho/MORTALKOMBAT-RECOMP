@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=MK Recomp - Recompilar / Recompile
+Exec=sh -c "cd \"$(dirname \"%k\")\" && ./build_recomp.sh"
+Terminal=true
+Icon=applications-development

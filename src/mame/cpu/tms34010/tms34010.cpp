@@ -14,7 +14,6 @@
 
 #include "emu.h"
 #include "tms34010.h"
-#include "../../../recomp/rc_abi.h"
 #include "34010dsm.h"
 
 #include "input.h" // for video debug keys
@@ -837,7 +836,7 @@ void tms34010_device::execute_run()
 	check_interrupt();
 	do
 	{
-		if (!m_rc->run(this))
+		if (!m_rc->run(&m_rch))
 		{
 			if (m_pc >= m_rc->base && ((m_pc - m_rc->base) >> 4) < m_rc->words && rc_misses.size() < 4096)
 			{
@@ -854,18 +853,22 @@ void tms34010_device::execute_run()
 	m_executing = false;
 }
 
-uint64_t tms34010_device::rc_layout_hash()
+void tms34010_device::rc_exec(void *cpu, uint16_t op)
 {
-	// sizes and the offsets of the members the generated code touches
-	tms34010_device *p = nullptr;
-	auto off = [&](const void *m) { return uint64_t(reinterpret_cast<const char *>(m) - reinterpret_cast<const char *>(p)); };
-	alignas(tms34010_device) static char dummy[sizeof(tms34010_device)];
-	p = reinterpret_cast<tms34010_device *>(dummy);
-	uint64_t v[] = { sizeof(tms34010_device), off(&p->m_pc), off(&p->m_ppc), off(&p->m_st), off(&p->m_icount), off(&p->m_regs[0]),
-	                 off(&p->m_IOregs[0]), off(&p->m_rc), off(&p->m_program), off(&p->m_cache), sizeof(void *) };
-	uint64_t h = 0xcbf29ce484222325ull;
-	for (uint64_t x : v) { h ^= x; h *= 0x100000001b3ull; }
-	return h;
+	static_cast<tms34010_device *>(cpu)->execute_op(op);
+}
+
+void tms34010_device::set_recompiled(const rc_module *m)
+{
+	m_rc = m;
+	static_assert(sizeof(m_regs[0]) == sizeof(rc_reg) && sizeof(m_regs) == 31 * sizeof(rc_reg), "register layout");
+	m_rch.cpu = this;
+	m_rch.pc = &m_pc;
+	m_rch.ppc = &m_ppc;
+	m_rch.st = &m_st;
+	m_rch.icount = &m_icount;
+	m_rch.regs = reinterpret_cast<rc_reg *>(&m_regs[0]);
+	m_rch.exec = &tms34010_device::rc_exec;
 }
 
 void tms34020_device::execute_op(uint16_t op)

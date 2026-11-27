@@ -29,14 +29,20 @@ jobs:
           make -j4 BUILD=build/win CXX=x86_64-w64-mingw32-g++-posix CC=x86_64-w64-mingw32-gcc-posix AR=x86_64-w64-mingw32-ar build/win/libcore.a
           make win WINCC=x86_64-w64-mingw32-gcc-posix WINCXX=x86_64-w64-mingw32-g++-posix SDL2W=$PWD/SDL2-$SDL_VER/x86_64-w64-mingw32
           file dist/MKRecomp/MKRecomp.exe
-      - name: Recompiler check (Windows module from a synthetic program, no ROMs)
+      - name: Recompiler for the package (mkrecomp.exe) and module check with Zig (no ROMs)
         run: |
+          make -j4 BUILD=build/win CXX=x86_64-w64-mingw32-g++-posix CC=x86_64-w64-mingw32-gcc-posix AR=x86_64-w64-mingw32-ar build/win/miniz.o
+          x86_64-w64-mingw32-g++-posix -std=c++20 -O2 -Isrc/emu -Isrc/mame -Isrc/board -Isrc/app -Isrc/third_party/miniz -Isrc \
+            tools/recomp/mkrecomp.cpp src/app/games.cpp src/app/romload.cpp build/win/miniz.o build/win/libcore.a \
+            -static -static-libgcc -static-libstdc++ -o mkrecomp.exe
+          file mkrecomp.exe
           sudo apt-get install -y build-essential
           make -j4 build/linux/libcore.a build/linux/miniz.o build/linux/mkrecomp
-          make -j4 BUILD=build/win-rc CXX=x86_64-w64-mingw32-g++-posix AR=x86_64-w64-mingw32-ar CXXFLAGS="-std=c++20 -O1 -Wno-deprecated-declarations" build/win-rc/libcore.a
+          curl -sSL https://ziglang.org/download/0.13.0/zig-linux-x86_64-0.13.0.tar.xz | tar xJ
+          mkdir -p sdk && cp src/recomp/rc_abi.h src/recomp/rc_module.h src/mame/cpu/tms34010/34010macros.h sdk/
           python3 tools/recomp/synth_image.py synth.bin
           mkdir -p gen && build/linux/mkrecomp --image synth.bin gen
-          tools/recomp/build_module.sh gen test build/win-rc/libcore.a test.dll x86_64-w64-mingw32-g++-posix
+          tools/recomp/build_module.sh gen test sdk test.dll "$PWD/zig-linux-x86_64-0.13.0/zig c++"
           file test.dll
       - name: Package
         run: |
@@ -44,6 +50,10 @@ jobs:
           cp dist/MKRecomp/MKRecomp.exe dist/MKRecomp/*.txt out/MKRecomp/
           cp dist/MKRecomp/roms/LEEME_README.txt out/MKRecomp/roms/
           mkdir -p out/MKRecomp/recomp && cp dist/MKRecomp/recomp/LEEME_README.txt out/MKRecomp/recomp/
+          mkdir -p out/MKRecomp/tools/recomp/sdk
+          cp mkrecomp.exe out/MKRecomp/tools/recomp/
+          cp src/recomp/rc_abi.h src/recomp/rc_module.h src/mame/cpu/tms34010/34010macros.h out/MKRecomp/tools/recomp/sdk/
+          cp dist/MKRecomp/build_recomp.ps1 dist/MKRecomp/RECOMPILAR_RECOMPILE.bat out/MKRecomp/
           cd out && zip -r ../MKRecomp-windows-x64.zip MKRecomp
       - uses: actions/upload-artifact@v4
         with:
@@ -80,14 +90,20 @@ jobs:
           make -j4 CXX=g++-12 CC=gcc-12 build/linux/libcore.a build/linux/miniz.o build/linux/cattest
           make linux-app CXX=g++-12 SDL2L=$PWD/sdl
           objdump -T build/linux/MKRecomp | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1
-      - name: Recompiler check (Linux module from a synthetic program, no ROMs)
+      - name: Recompiler for the package (mkrecomp) and module checks with g++ and Zig (no ROMs)
         run: |
           make -j4 CXX=g++-12 CC=gcc-12 build/linux/mkrecomp
-          make -j4 BUILD=build/pic CXX=g++-12 CXXFLAGS="-std=c++20 -O1 -fPIC -Wno-deprecated-declarations" build/pic/libcore.a
+          g++-12 -std=c++20 -O2 -Isrc/emu -Isrc/mame -Isrc/board -Isrc/app -Isrc/third_party/miniz -Isrc \
+            tools/recomp/mkrecomp.cpp src/app/games.cpp src/app/romload.cpp build/linux/miniz.o build/linux/libcore.a \
+            -static-libgcc -static-libstdc++ -s -o mkrecomp
+          mkdir -p sdk && cp src/recomp/rc_abi.h src/recomp/rc_module.h src/mame/cpu/tms34010/34010macros.h sdk/
           python3 tools/recomp/synth_image.py synth.bin
-          mkdir -p gen && build/linux/mkrecomp --image synth.bin gen
-          tools/recomp/build_module.sh gen test build/pic/libcore.a test.so g++-12
+          mkdir -p gen && ./mkrecomp --image synth.bin gen
+          tools/recomp/build_module.sh gen test sdk test.so g++-12
           nm -D test.so | grep mkrc_get_module
+          curl -sSL https://ziglang.org/download/0.13.0/zig-linux-x86_64-0.13.0.tar.xz | tar xJ
+          tools/recomp/build_module.sh gen test sdk test-zig.so "$PWD/zig-linux-x86_64-0.13.0/zig c++"
+          nm -D test-zig.so | grep mkrc_get_module
       - name: Package
         run: |
           mkdir -p out/MKRecomp/roms
@@ -95,6 +111,11 @@ jobs:
           chmod 755 out/MKRecomp/MKRecomp
           cp dist/MKRecomp/roms/LEEME_README.txt out/MKRecomp/roms/
           mkdir -p out/MKRecomp/recomp && cp dist/MKRecomp/recomp/LEEME_README.txt out/MKRecomp/recomp/
+          mkdir -p out/MKRecomp/tools/recomp/sdk
+          cp mkrecomp out/MKRecomp/tools/recomp/ && chmod 755 out/MKRecomp/tools/recomp/mkrecomp
+          cp src/recomp/rc_abi.h src/recomp/rc_module.h src/mame/cpu/tms34010/34010macros.h out/MKRecomp/tools/recomp/sdk/
+          cp dist/MKRecomp/build_recomp.sh "dist/MKRecomp/Recompilar - Recompile.desktop" out/MKRecomp/
+          chmod 755 out/MKRecomp/build_recomp.sh
           tar -C out -czf MKRecomp-linux-x64.tar.gz MKRecomp
       - uses: actions/upload-artifact@v4
         with:
