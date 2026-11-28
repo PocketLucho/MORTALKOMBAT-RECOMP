@@ -6,6 +6,8 @@ param([string[]]$Games = @('mk', 'mk2', 'mk3', 'umk3'))
 $ErrorActionPreference = 'Stop'
 Set-Location -LiteralPath $PSScriptRoot
 function Say($es, $en) { Write-Host ""; Write-Host "== $es" -ForegroundColor Red; Write-Host "   $en" }
+# Start-Process -ArgumentList does not quote arguments: paths with spaces would split.
+function Q([string[]]$a) { $a | ForEach-Object { if ($_ -match '[\s"]') { '"' + ($_ -replace '"', '\"') + '"' } else { $_ } } }
 function Fail($es, $en) { Write-Host ""; Write-Host "ERROR: $es" -ForegroundColor Red; Write-Host "       $en" -ForegroundColor Red; Remove-Item -Recurse -Force tools\gen -ErrorAction SilentlyContinue; exit 1 }
 Say "MORTAL KOMBAT RECOMP: recompilacion estatica" "MORTAL KOMBAT RECOMP: static recompilation"
 $mk = "tools\recomp\mkrecomp.exe"; $sdk = (Resolve-Path "tools\recomp\sdk").Path
@@ -28,21 +30,28 @@ $built = 0
 foreach ($g in $Games) {
   Remove-Item -Recurse -Force tools\gen -ErrorAction SilentlyContinue
   New-Item -ItemType Directory -Force tools\gen | Out-Null
-  $miss = @(); if (Test-Path "recomp\$g.miss") { $miss = @("recomp\$g.miss") }
-  & $mk . $g tools\gen @miss 2> tools\gen\log.txt
-  if ($LASTEXITCODE -ne 0) { Write-Host "   $(Get-Content tools\gen\log.txt -Tail 1)"; continue }
+  $margs = @('.', $g, 'tools\gen'); if (Test-Path "recomp\$g.miss") { $margs += "recomp\$g.miss" }
+  # Start-Process: Windows PowerShell 5.1 turns a native program's stderr into errors (and with
+  # 'Stop' aborts), so the output goes to files and only the exit code decides.
+  $p = Start-Process -FilePath $mk -ArgumentList (Q $margs) -NoNewWindow -Wait -PassThru `
+         -RedirectStandardOutput tools\gen\out.txt -RedirectStandardError tools\gen\log.txt
+  $log = @(Get-Content tools\gen\out.txt, tools\gen\log.txt -ErrorAction SilentlyContinue)
+  if ($p.ExitCode -ne 0) { if ($log.Count) { Write-Host "   $($log[-1])" }; continue }
+  $log | ForEach-Object { Write-Host "   $_" }
   Say "${g}: compilando..." "${g}: compiling..."
   $files = Get-Content "tools\gen\rc_$g.files"
   $flags = @('c++', '-std=c++17', '-O2', '-fno-strict-aliasing', '-w', '-target', 'x86_64-windows-gnu', "-I$sdk")
   $jobs = @()
   foreach ($f in $files) {
-    $jobs += Start-Process -FilePath $zig -ArgumentList ($flags + @('-c', "tools\gen\$f", '-o', "tools\gen\$f.o")) -NoNewWindow -PassThru
+    $pr = Start-Process -FilePath $zig -ArgumentList (Q ($flags + @('-c', "tools\gen\$f", '-o', "tools\gen\$f.o"))) -NoNewWindow -PassThru
+    $null = $pr.Handle   # keep the handle, otherwise ExitCode is empty after the process ends
+    $jobs += $pr
     while (@($jobs | Where-Object { -not $_.HasExited }).Count -ge [Environment]::ProcessorCount) { Start-Sleep -Milliseconds 200 }
   }
   $jobs | ForEach-Object { $_.WaitForExit() }
   if (@($jobs | Where-Object { $_.ExitCode -ne 0 }).Count -gt 0) { Fail "${g}: error de compilacion." "${g}: compilation error." }
-  & $zig @($flags + @('-shared', '-o', "recomp\$g.dll") + ($files | ForEach-Object { "tools\gen\$_.o" }))
-  if ($LASTEXITCODE -ne 0) { Fail "${g}: error al enlazar." "${g}: link error." }
+  $l = Start-Process -FilePath $zig -ArgumentList (Q ($flags + @('-shared', '-o', "recomp\$g.dll") + ($files | ForEach-Object { "tools\gen\$_.o" }))) -NoNewWindow -Wait -PassThru
+  if ($l.ExitCode -ne 0) { Fail "${g}: error al enlazar." "${g}: link error." }
   Remove-Item -Force "recomp\$g.lib", "recomp\$g.pdb" -ErrorAction SilentlyContinue
   Write-Host "   -> recomp\$g.dll"; $built++
 }
